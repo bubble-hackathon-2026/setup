@@ -88,15 +88,32 @@ cd hackathon-template
 # Overlay hackathon files
 cp "$REPO_ROOT/template-overlay/CLAUDE.md" .
 cp -r "$REPO_ROOT/template-overlay/context" .
+cp -r "$REPO_ROOT/template-overlay/.githooks" .
 
 # Add .gitkeep for screenshots directory
 mkdir -p context/screenshots
 touch context/screenshots/.gitkeep
 
-# Add vercel to .gitignore
-echo "" >> .gitignore
-echo "# Vercel" >> .gitignore
-echo ".vercel" >> .gitignore
+# Append extra .gitignore entries (secrets, credentials, IDE, OS)
+cat "$REPO_ROOT/template-overlay/.gitignore-extra" >> .gitignore
+
+# Create .env.example to show the safe pattern for secrets
+cat > .env.example << 'ENVEOF'
+# Copy this file to .env.local and fill in your values.
+# .env.local is gitignored — your secrets stay on your machine.
+#
+# Example:
+# OPENAI_API_KEY=sk-...
+# NEXT_PUBLIC_MAP_KEY=pk-...
+ENVEOF
+
+# Add "prepare" script to package.json so git hooks auto-install on npm install
+node -e "
+const pkg = require('./package.json');
+pkg.scripts = pkg.scripts || {};
+pkg.scripts.prepare = 'git config core.hooksPath .githooks 2>/dev/null || true';
+require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+"
 
 info "Next.js + Tailwind + hackathon overlay assembled"
 
@@ -125,6 +142,12 @@ gh api -X PATCH "repos/$HACKATHON_ORG/$HACKATHON_TEMPLATE_REPO" \
     --silent 2>/dev/null || true
 
 info "Template repo ready: $HACKATHON_ORG/$HACKATHON_TEMPLATE_REPO"
+
+# Restrict _template to admin-only writes (others inherit org read via default_repository_permission)
+# On GitHub Free we can't use branch protection, but we can remove the default team permission
+# and rely on the creator (admin) having push access.
+# The org default gives write, so we override at the repo level by removing the "all members" permission.
+# This isn't possible on GitHub Free without Teams — noted as a known limitation.
 
 # --- Push this admin repo to the setup repo on GitHub ---
 

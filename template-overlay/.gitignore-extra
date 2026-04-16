@@ -1,0 +1,36 @@
+
+# === Secrets & credentials ===
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials.json
+service-account*.json
+*_rsa
+*_rsa.pub
+*_dsa
+*_ecdsa
+*_ed25519
+*.secret
+*secret*.json
+*credentials*.json
+token.json
+tokens.json
+
+# === Vercel ===
+.vercel
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

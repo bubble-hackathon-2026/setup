@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Pre-commit hook: block commits that contain likely secrets.
+# Installed automatically via the "prepare" npm script.
+
+staged=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null)
+[ -z "$staged" ] && exit 0
+
+# Skip binary files, lock files, and images
+filtered=$(echo "$staged" | grep -vE '\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|lock|lockb)$' || true)
+[ -z "$filtered" ] && exit 0
+
+found=0
+report() {
+    if [ $found -eq 0 ]; then
+        echo ""
+        echo "  BLOCKED — possible secret detected in staged files"
+        echo ""
+        found=1
+    fi
+    echo "  $1"
+    echo "    pattern: $2"
+    echo ""
+}
+
+while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    [ ! -f "$file" ] && continue
+    content=$(git diff --cached -- "$file" | grep '^+' | grep -v '^+++' || true)
+    [ -z "$content" ] && continue
+
+    # AWS Access Key
+    if echo "$content" | grep -qE 'AKIA[0-9A-Z]{16}'; then
+        report "$file" "AWS Access Key (AKIA...)"
+    fi
+
+    # Generic long secret keys (sk-, key-, token patterns)
+    if echo "$content" | grep -qE '(sk-|sk_live_|sk_test_)[a-zA-Z0-9]{20,}'; then
+        report "$file" "Secret key (sk-...)"
+    fi
+
+    # GitHub tokens
+    if echo "$content" | grep -qE '(ghp_|gho_|ghu_|ghs_|ghr_)[a-zA-Z0-9]{30,}'; then
+        report "$file" "GitHub token"
+    fi
+
+    # Slack tokens
+    if echo "$content" | grep -qE 'xox[bpras]-[a-zA-Z0-9\-]+'; then
+        report "$file" "Slack token"
+    fi
+
+    # Private keys
+    if echo "$content" | grep -qE 'BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY'; then
+        report "$file" "Private key"
+    fi
+
+    # Google API key
+    if echo "$content" | grep -qE 'AIza[0-9A-Za-z_-]{35}'; then
+        report "$file" "Google API key"
+    fi
+
+    # .env file being committed (should be gitignored)
+    if echo "$file" | grep -qE '^\.(env|env\..*)$'; then
+        report "$file" ".env file (should be in .gitignore)"
+    fi
+
+done <<< "$filtered"
+
+if [ $found -eq 1 ]; then
+    echo "  Move secrets to .env.local (which is gitignored) and reference"
+    echo "  them via process.env.YOUR_KEY in your code."
+    echo ""
+    echo "  If this is a false positive, you can skip with: git commit --no-verify"
+    echo ""
+    exit 1
+fi
+
+exit 0

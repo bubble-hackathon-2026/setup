@@ -47,6 +47,25 @@ When the user says "deploy", "share this", "get me a link", or "I want to show s
 
 If Vercel deploy has issues, fall back to: `npx serve out/` after `npm run build` — this serves locally, and the user can demo via screen share or Loom recording.
 
+## Secrets & API Keys
+
+NEVER put API keys, passwords, tokens, or other secrets directly in code files. This is critical — even in a hackathon prototype.
+
+**The safe pattern:**
+1. Put secrets in `.env.local` (this file is gitignored and never committed):
+   ```
+   OPENAI_API_KEY=sk-abc123...
+   MY_API_SECRET=xyz...
+   ```
+2. Access them in code via `process.env.OPENAI_API_KEY`
+3. For Next.js client-side code, prefix with `NEXT_PUBLIC_`: `NEXT_PUBLIC_MAP_KEY=...`
+
+**If the user pastes an API key into the chat**, put it in `.env.local` — never in a source file. Tell them: "I've stored your key safely in .env.local so it won't be shared or uploaded."
+
+**If you see a secret already in a source file**, move it to `.env.local` immediately and replace the reference with `process.env.KEY_NAME`.
+
+A pre-commit hook will block commits that appear to contain secrets. If it fires, help the user move the secret to `.env.local`.
+
 ## Working with Teammates (Git)
 
 The user's teammates may be pushing changes to the same repository. Handle git operations invisibly — the user should never need to think about git.
@@ -61,9 +80,11 @@ git stash pop 2>/dev/null
 ### When the user says "save", "save my work", "commit", or "push":
 ```bash
 git add -A
+git status  # sanity-check: make sure no .env or credential files are staged
 git commit -m "<short description of what changed>"
 git push origin main
 ```
+If `git status` shows any `.env` files or files that might contain secrets staged, unstage them with `git reset HEAD <file>` before committing.
 If the push is rejected, pull and retry:
 ```bash
 git pull --rebase origin main
