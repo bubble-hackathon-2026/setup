@@ -112,10 +112,17 @@ class Handler(BaseHTTPRequestHandler):
         # Create or update user
         existing = api("GET", f"/users/{username}")
         if "login" in existing:
-            api("PATCH", f"/admin/users/{username}", {
+            # User exists — reset password so we can mint a new token.
+            # Gitea's PATCH requires source_id and login_name.
+            patch_result = api("PATCH", f"/admin/users/{username}", {
+                "source_id": 0,
+                "login_name": username,
                 "password": password,
                 "must_change_password": False,
             })
+            if "error" in patch_result and "login" not in patch_result:
+                self.send_json(500, {"error": f"password reset failed: {patch_result.get('error', 'unknown')}"})
+                return
         else:
             result = api("POST", "/admin/users", {
                 "username": username,
@@ -126,7 +133,7 @@ class Handler(BaseHTTPRequestHandler):
                 "visibility": "limited",
             })
             if "error" in result and "login" not in result:
-                self.send_json(500, {"error": "account creation failed"})
+                self.send_json(500, {"error": f"account creation failed: {result.get('error', 'unknown')}"})
                 return
 
         # Add to org
@@ -166,14 +173,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(409, {"error": "team already exists"})
             return
 
-        # Generate from template
-        api("POST", f"/repos/{ORG}/{TEMPLATE}/generate", {
+        # Generate from template. git_content=true is REQUIRED to actually
+        # copy the template's files into the new repo.
+        gen_result = api("POST", f"/repos/{ORG}/{TEMPLATE}/generate", {
             "owner": ORG,
             "name": team_name,
             "private": True,
             "description": d.get("description", f"Hackathon: {team_name}"),
             "default_branch": "main",
+            "git_content": True,
         })
+        if "name" not in gen_result:
+            self.send_json(500, {"error": f"repo creation failed: {gen_result.get('message', gen_result.get('error', 'unknown'))}"})
+            return
 
         # Create Gitea team for per-repo access
         team = api("POST", f"/orgs/{ORG}/teams", {

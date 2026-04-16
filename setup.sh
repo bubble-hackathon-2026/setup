@@ -124,9 +124,10 @@ read -r -p "  Your @bubble.io email: " user_email
 
 step "Setting up your account..."
 
-provision_result=$(curl -sf -X POST "$PROVISIONER/provision" \
+# -s (silent) but NOT -f (fail on HTTP error), so we get the server's error body
+provision_result=$(curl -s -X POST "$PROVISIONER/provision" \
     -H "Content-Type: application/json" \
-    -d "{\"name\": \"$user_name\", \"email\": \"$user_email\"}" 2>/dev/null || echo '{"error":"request failed"}')
+    -d "{\"name\": \"$user_name\", \"email\": \"$user_email\"}" 2>/dev/null || echo '{"error":"cannot reach server"}')
 
 # Check for errors
 error=$(echo "$provision_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))" 2>/dev/null || echo "parse error")
@@ -145,15 +146,12 @@ fi
 
 info "Account ready: $username"
 
-# Configure git credentials
-git config --global credential.helper store 2>/dev/null || true
-cred_file="$HOME/.git-credentials"
-touch "$cred_file"
 server_host="$SERVER_IP:3000"
-grep -v "$server_host" "$cred_file" > "${cred_file}.tmp" 2>/dev/null || true
-echo "http://$username:$user_token@$server_host" >> "${cred_file}.tmp"
-mv "${cred_file}.tmp" "$cred_file"
-chmod 600 "$cred_file"
+# Build the clone URL with inline credentials. We embed creds in the URL
+# rather than using a credential helper — macOS's osxkeychain helper
+# overrides credential.helper=store globally, and caches stale tokens.
+# Inline creds bypass all credential helpers and work reliably.
+repo_url_base="http://$username:$user_token@$server_host/$GITEA_ORG"
 
 git config --global user.name "$user_name" 2>/dev/null || true
 git config --global user.email "$user_email" 2>/dev/null || true
@@ -183,7 +181,7 @@ if [ "$choice" = "1" ]; then
         team_slug=$(slugify "$raw_name")
         [ -z "$team_slug" ] && { fail "Enter a name using letters, numbers, or hyphens."; continue; }
 
-        result=$(curl -sf -X POST "$PROVISIONER/create-team" \
+        result=$(curl -s -X POST "$PROVISIONER/create-team" \
             -H "Content-Type: application/json" \
             -d "{\"team\": \"$team_slug\", \"username\": \"$username\"}" 2>/dev/null || echo '{}')
 
@@ -210,7 +208,7 @@ if [ "$choice" = "1" ]; then
         if [ -d "$HACKATHON_DIR/$team_slug" ]; then
             rm -rf "$HACKATHON_DIR/$team_slug"
         fi
-        if ! git clone "$GITEA_URL/$GITEA_ORG/$team_slug.git" "$HACKATHON_DIR/$team_slug" 2>&1; then
+        if ! git clone "$repo_url_base/$team_slug.git" "$HACKATHON_DIR/$team_slug" 2>&1; then
             fail "Could not clone the new repo. Contact a hackathon organizer."
             exit 1
         fi
@@ -253,7 +251,7 @@ for t in json.load(sys.stdin).get('teams', []):
 
     step "Joining team '$team_slug'..."
 
-    curl -sf -X POST "$PROVISIONER/join-team" \
+    curl -s -X POST "$PROVISIONER/join-team" \
         -H "Content-Type: application/json" \
         -d "{\"team\": \"$team_slug\", \"username\": \"$username\"}" >/dev/null 2>&1
 
@@ -263,9 +261,11 @@ for t in json.load(sys.stdin).get('teams', []):
     if [ -d "$HACKATHON_DIR/$team_slug" ]; then
         warn "Directory exists — pulling latest..."
         cd "$HACKATHON_DIR/$team_slug"
+        # Update remote URL with fresh creds before pulling
+        git remote set-url origin "$repo_url_base/$team_slug.git" 2>/dev/null || true
         git pull --rebase origin main 2>/dev/null || true
     else
-        if ! git clone "$GITEA_URL/$GITEA_ORG/$team_slug.git" "$HACKATHON_DIR/$team_slug" 2>&1; then
+        if ! git clone "$repo_url_base/$team_slug.git" "$HACKATHON_DIR/$team_slug" 2>&1; then
             fail "Could not clone the repo. Contact a hackathon organizer."
             exit 1
         fi
