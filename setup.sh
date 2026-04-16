@@ -4,24 +4,16 @@ set -euo pipefail
 # ============================================================================
 # Bubble Hackathon 2026 — Team Setup
 #
-# Run this with:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/bubble-hackathon-2026/setup/main/setup.sh)
+# Usage (shared via internal Slack — the server IP is the secret):
+#   bash <(curl -fsSL https://raw.githubusercontent.com/bubble-hackathon-2026/setup/main/setup.sh) SERVER_IP
 #
-# The only prerequisite is Claude Code. Everything else is auto-installed.
+# Only prerequisite: Claude Code.
+# Node.js and git are auto-installed if missing.
 # ============================================================================
 
-# --- Load config (local file or fetch from GitHub) ---
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" 2>/dev/null)" && pwd 2>/dev/null || echo ".")"
-if [ -f "$SCRIPT_DIR/config.sh" ]; then
-    source "$SCRIPT_DIR/config.sh"
-else
-    eval "$(curl -fsSL "https://raw.githubusercontent.com/bubble-hackathon-2026/setup/main/config.sh" 2>/dev/null)"
-fi
-
-if [ -z "${GITEA_URL:-}" ]; then
-    echo "Error: Hackathon server not configured yet. Ask a hackathon organizer to run bootstrap first."
-    exit 1
-fi
+SERVER_IP="${1:-}"
+GITEA_ORG="hackathon"
+HACKATHON_DIR="$HOME/hackathon"
 
 # --- Colors & helpers ---
 
@@ -47,7 +39,23 @@ echo -e "${BOLD}========================================${NC}"
 echo -e "${BOLD}   Bubble Hackathon 2026 — Setup${NC}"
 echo -e "${BOLD}========================================${NC}"
 
-# --- Prerequisites: auto-install what's missing ---
+# --- Get server IP ---
+
+if [ -z "$SERVER_IP" ]; then
+    echo ""
+    echo "  Enter the hackathon server address (from the Slack message)."
+    read -r -p "  Server IP: " SERVER_IP
+fi
+
+[ -z "$SERVER_IP" ] && { fail "Server IP is required."; exit 1; }
+
+# Strip protocol/port if someone pasted a full URL
+SERVER_IP=$(echo "$SERVER_IP" | sed 's|http[s]*://||' | cut -d: -f1)
+
+GITEA_URL="http://$SERVER_IP:3000"
+PROVISIONER="http://$SERVER_IP:8080"
+
+# --- Auto-install prerequisites ---
 
 step "Checking prerequisites..."
 
@@ -59,159 +67,110 @@ else
     echo "  A dialog may appear. Click 'Install' and wait for it to finish."
     xcode-select --install 2>/dev/null || true
     echo ""
-    echo -e "  ${BOLD}Press Enter once the installation is complete...${NC}"
+    echo -e "  Press Enter once the installation is complete..."
     read -r
     if command -v git &>/dev/null; then
         info "Git installed"
     else
-        fail "Git still not found. Please restart your terminal and re-run this script."
+        fail "Git still not found. Restart your terminal and re-run this script."
         exit 1
     fi
 fi
 
-# Node.js — needed for the project (npm install, npm run dev, deploy)
+# Node.js — auto-install via macOS .pkg if missing
 if command -v node &>/dev/null; then
     info "Node.js ($(node --version))"
 else
-    warn "Node.js not found — installing..."
-    echo "  You may be asked for your computer password."
-    NODE_PKG_URL="https://nodejs.org/dist/v22.15.0/node-v22.15.0.pkg"
-    curl -fsSL "$NODE_PKG_URL" -o /tmp/node-installer.pkg
+    warn "Node.js not found — installing (you may be asked for your Mac password)..."
+    curl -fsSL "https://nodejs.org/dist/v22.15.0/node-v22.15.0.pkg" -o /tmp/node-installer.pkg
     sudo installer -pkg /tmp/node-installer.pkg -target / 2>/dev/null
     rm -f /tmp/node-installer.pkg
-    # Add to PATH for this session (installer puts it in /usr/local/bin)
     export PATH="/usr/local/bin:$PATH"
     if command -v node &>/dev/null; then
         info "Node.js installed ($(node --version))"
     else
-        fail "Node.js installation failed. Install manually from https://nodejs.org and re-run."
+        fail "Install failed. Download manually from https://nodejs.org and re-run."
         exit 1
     fi
 fi
 
-# Claude Code — check but don't block (they can install after)
+# Claude Code
 if command -v claude &>/dev/null; then
     info "Claude Code"
 else
-    warn "Claude Code not found — install it after setup:"
+    warn "Claude Code not found — install after setup:"
     echo -e "       ${BLUE}npm install -g @anthropic-ai/claude-code${NC}"
 fi
 
-# --- Check Gitea server ---
+# --- Check server ---
 
 step "Connecting to hackathon server..."
 
-if ! curl -sf "$GITEA_URL/api/v1/version" &>/dev/null; then
-    fail "Cannot reach the hackathon server at $GITEA_URL"
-    echo "  Check your internet connection. If the problem persists, contact a hackathon organizer."
+if ! curl -sf "$PROVISIONER/health" &>/dev/null; then
+    fail "Cannot reach the hackathon server at $SERVER_IP"
+    echo "  Make sure you have the right IP from the Slack message."
     exit 1
 fi
 info "Server reachable"
-
-# Fetch the admin token from the Gitea server (NOT stored in this script)
-GITEA_ADMIN_TOKEN=$(curl -sf "$GITEA_URL/$GITEA_ORG/_config/raw/branch/main/token" 2>/dev/null || echo "")
-if [ -z "$GITEA_ADMIN_TOKEN" ]; then
-    fail "Could not fetch server config. Contact a hackathon organizer."
-    exit 1
-fi
 
 # --- Identify the user ---
 
 step "Who are you?"
 echo ""
-
 read -r -p "  Your name (e.g., Jane Smith): " user_name
 read -r -p "  Your @bubble.io email: " user_email
 
-# Validate email domain
-if [[ ! "$user_email" == *@bubble.io ]]; then
-    fail "Please use your @bubble.io email address."
-    exit 1
-fi
-
-# Derive a username from email (part before @)
-username=$(echo "$user_email" | cut -d@ -f1 | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
-
-# --- Create or get Gitea account ---
+# --- Create account via provisioner (email enforced server-side) ---
 
 step "Setting up your account..."
 
-user_exists=$(curl -sf "$GITEA_URL/api/v1/users/$username" \
-    -H "Authorization: token $GITEA_ADMIN_TOKEN" 2>/dev/null \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('login',''))" 2>/dev/null || echo "")
-
-user_password=$(openssl rand -hex 12)
-
-if [ -z "$user_exists" ]; then
-    curl -sf -X POST "$GITEA_URL/api/v1/admin/users" \
-        -H "Authorization: token $GITEA_ADMIN_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{
-            \"username\": \"$username\",
-            \"email\": \"$user_email\",
-            \"full_name\": \"$user_name\",
-            \"password\": \"$user_password\",
-            \"must_change_password\": false,
-            \"visibility\": \"limited\"
-        }" >/dev/null 2>&1
-    info "Account created: $username"
-else
-    curl -sf -X PATCH "$GITEA_URL/api/v1/admin/users/$username" \
-        -H "Authorization: token $GITEA_ADMIN_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"password\": \"$user_password\", \"must_change_password\": false}" >/dev/null 2>&1
-    info "Account found: $username"
-fi
-
-# Create a personal access token
-user_token=""
-# Delete existing token if any, then create fresh
-curl -sf -X DELETE "$GITEA_URL/api/v1/users/$username/tokens/hackathon-cli" \
-    -u "$username:$user_password" >/dev/null 2>&1 || true
-
-user_token=$(curl -sf -X POST "$GITEA_URL/api/v1/users/$username/tokens" \
-    -u "$username:$user_password" \
+provision_result=$(curl -sf -X POST "$PROVISIONER/provision" \
     -H "Content-Type: application/json" \
-    -d '{"name":"hackathon-cli","scopes":["all"]}' \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('sha1',''))" 2>/dev/null || echo "")
+    -d "{\"name\": \"$user_name\", \"email\": \"$user_email\"}" 2>/dev/null || echo '{"error":"request failed"}')
 
-if [ -z "$user_token" ]; then
-    fail "Could not create access token. Contact a hackathon organizer."
+# Check for errors
+error=$(echo "$provision_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))" 2>/dev/null || echo "parse error")
+if [ -n "$error" ]; then
+    fail "$error"
     exit 1
 fi
 
-# Configure git credentials for this server
-git_credential_url=$(echo "$GITEA_URL" | sed "s|://|://$username:$user_token@|")
-git config --global credential.helper store 2>/dev/null || true
+username=$(echo "$provision_result" | python3 -c "import sys,json; print(json.load(sys.stdin)['username'])" 2>/dev/null)
+user_token=$(echo "$provision_result" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null)
 
+if [ -z "$user_token" ]; then
+    fail "Account setup failed. Contact a hackathon organizer."
+    exit 1
+fi
+
+info "Account ready: $username"
+
+# Configure git credentials
+git config --global credential.helper store 2>/dev/null || true
 cred_file="$HOME/.git-credentials"
 touch "$cred_file"
-server_host=$(echo "$GITEA_URL" | sed 's|http[s]*://||')
+server_host="$SERVER_IP:3000"
 grep -v "$server_host" "$cred_file" > "${cred_file}.tmp" 2>/dev/null || true
-echo "$git_credential_url" >> "${cred_file}.tmp"
+echo "http://$username:$user_token@$server_host" >> "${cred_file}.tmp"
 mv "${cred_file}.tmp" "$cred_file"
 chmod 600 "$cred_file"
 
 git config --global user.name "$user_name" 2>/dev/null || true
 git config --global user.email "$user_email" 2>/dev/null || true
 
-info "Git credentials configured"
-
-# Add user to hackathon org
-curl -sf -X PUT "$GITEA_URL/api/v1/orgs/$GITEA_ORG/members/$username" \
-    -H "Authorization: token $GITEA_ADMIN_TOKEN" >/dev/null 2>&1 || true
+info "Git configured"
 
 # --- New team or join ---
+
+slugify() {
+    echo "$1" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//'
+}
 
 step "What would you like to do?"
 echo "  1) Start a new team"
 echo "  2) Join an existing team"
 echo ""
 read -r -p "  Enter 1 or 2: " choice
-
-slugify() {
-    echo "$1" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//'
-}
 
 team_slug=""
 
@@ -222,14 +181,14 @@ if [ "$choice" = "1" ]; then
     while true; do
         read -r -p "  Team name: " raw_name
         team_slug=$(slugify "$raw_name")
+        [ -z "$team_slug" ] && { fail "Enter a name using letters, numbers, or hyphens."; continue; }
 
-        if [ -z "$team_slug" ]; then
-            fail "Enter a name using letters, numbers, or hyphens."
-            continue
-        fi
+        result=$(curl -sf -X POST "$PROVISIONER/create-team" \
+            -H "Content-Type: application/json" \
+            -d "{\"team\": \"$team_slug\", \"username\": \"$username\"}" 2>/dev/null || echo '{}')
 
-        if curl -sf "$GITEA_URL/api/v1/repos/$GITEA_ORG/$team_slug" \
-            -H "Authorization: token $GITEA_ADMIN_TOKEN" &>/dev/null; then
+        err=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))" 2>/dev/null || echo "")
+        if [ "$err" = "team already exists" ]; then
             warn "Team '$team_slug' already exists."
             read -r -p "  Join it instead? (y/n): " yn
             if [[ "$yn" =~ ^[Yy] ]]; then
@@ -237,56 +196,24 @@ if [ "$choice" = "1" ]; then
                 break
             fi
             continue
+        elif [ -n "$err" ]; then
+            fail "$err"
+            continue
         fi
+
+        info "Team created"
         break
     done
 
     if [ "$choice" = "1" ]; then
-        step "Creating team '$team_slug'..."
-
-        # Create repo from template
-        curl -sf -X POST "$GITEA_URL/api/v1/repos/$GITEA_ORG/$GITEA_TEMPLATE_REPO/generate" \
-            -H "Authorization: token $GITEA_ADMIN_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"owner\": \"$GITEA_ORG\",
-                \"name\": \"$team_slug\",
-                \"private\": true,
-                \"description\": \"Hackathon project: $raw_name\",
-                \"default_branch\": \"main\"
-            }" >/dev/null 2>&1
-
-        info "Repository created"
-
-        # Create a Gitea team for access control
-        team_id=$(curl -sf -X POST "$GITEA_URL/api/v1/orgs/$GITEA_ORG/teams" \
-            -H "Authorization: token $GITEA_ADMIN_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"name\": \"team-$team_slug\",
-                \"permission\": \"write\",
-                \"units\": [\"repo.code\",\"repo.issues\"],
-                \"includes_all_repositories\": false
-            }" 2>/dev/null \
-            | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
-
-        if [ -n "$team_id" ]; then
-            curl -sf -X PUT "$GITEA_URL/api/v1/teams/$team_id/repos/$GITEA_ORG/$team_slug" \
-                -H "Authorization: token $GITEA_ADMIN_TOKEN" >/dev/null 2>&1 || true
-            curl -sf -X PUT "$GITEA_URL/api/v1/teams/$team_id/members/$username" \
-                -H "Authorization: token $GITEA_ADMIN_TOKEN" >/dev/null 2>&1 || true
-            info "Access control configured"
-        fi
-
-        # Clone
         mkdir -p "$HACKATHON_DIR"
         [ -d "$HACKATHON_DIR/$team_slug" ] && rm -rf "$HACKATHON_DIR/$team_slug"
         git clone "$GITEA_URL/$GITEA_ORG/$team_slug.git" "$HACKATHON_DIR/$team_slug" 2>/dev/null
 
         cd "$HACKATHON_DIR/$team_slug"
-        echo "  Installing dependencies (this takes a moment)..."
+        echo "  Installing dependencies (takes a moment)..."
         npm install --silent 2>/dev/null
-        info "Dependencies installed"
+        info "Ready"
     fi
 fi
 
@@ -295,14 +222,11 @@ fi
 if [ "$choice" = "2" ]; then
     if [ -z "$team_slug" ]; then
         echo ""
-        teams=$(curl -sf "$GITEA_URL/api/v1/orgs/$GITEA_ORG/repos?limit=100" \
-            -H "Authorization: token $GITEA_ADMIN_TOKEN" 2>/dev/null \
-            | python3 -c "
+        teams_json=$(curl -sf "$PROVISIONER/teams" 2>/dev/null || echo '{"teams":[]}')
+        teams=$(echo "$teams_json" | python3 -c "
 import sys, json
-repos = json.load(sys.stdin)
-for r in sorted(repos, key=lambda x: x['name']):
-    if not r['name'].startswith('_'):
-        print(r['name'])
+for t in json.load(sys.stdin).get('teams', []):
+    print(t)
 " 2>/dev/null || echo "")
 
         if [ -z "$teams" ]; then
@@ -317,50 +241,35 @@ for r in sorted(repos, key=lambda x: x['name']):
         while true; do
             read -r -p "  Team to join: " raw_name
             team_slug=$(slugify "$raw_name")
-            if curl -sf "$GITEA_URL/api/v1/repos/$GITEA_ORG/$team_slug" \
-                -H "Authorization: token $GITEA_ADMIN_TOKEN" &>/dev/null; then
-                break
-            fi
-            fail "Team '$team_slug' not found. Try again (see list above)."
+            echo "$teams" | grep -qx "$team_slug" && break
+            fail "Team '$team_slug' not found. Try again."
         done
     fi
 
     step "Joining team '$team_slug'..."
 
-    # Add user to the team's access group
-    team_id=$(curl -sf "$GITEA_URL/api/v1/orgs/$GITEA_ORG/teams" \
-        -H "Authorization: token $GITEA_ADMIN_TOKEN" 2>/dev/null \
-        | python3 -c "
-import sys, json
-for t in json.load(sys.stdin):
-    if t['name'] == 'team-$team_slug':
-        print(t['id'])
-        break
-" 2>/dev/null || echo "")
+    curl -sf -X POST "$PROVISIONER/join-team" \
+        -H "Content-Type: application/json" \
+        -d "{\"team\": \"$team_slug\", \"username\": \"$username\"}" >/dev/null 2>&1
 
-    if [ -n "$team_id" ]; then
-        curl -sf -X PUT "$GITEA_URL/api/v1/teams/$team_id/members/$username" \
-            -H "Authorization: token $GITEA_ADMIN_TOKEN" >/dev/null 2>&1 || true
-        info "Added to team"
-    fi
+    info "Added to team"
 
     mkdir -p "$HACKATHON_DIR"
-
     if [ -d "$HACKATHON_DIR/$team_slug" ]; then
-        warn "Directory exists — pulling latest changes..."
+        warn "Directory exists — pulling latest..."
         cd "$HACKATHON_DIR/$team_slug"
         git pull --rebase origin main 2>/dev/null || true
     else
         git clone "$GITEA_URL/$GITEA_ORG/$team_slug.git" "$HACKATHON_DIR/$team_slug" 2>/dev/null
         cd "$HACKATHON_DIR/$team_slug"
-        echo "  Installing dependencies (this takes a moment)..."
+        echo "  Installing dependencies (takes a moment)..."
         npm install --silent 2>/dev/null
     fi
 
-    info "Project ready"
+    info "Ready"
 fi
 
-# --- Success ---
+# --- Done ---
 
 echo ""
 echo -e "${GREEN}${BOLD}========================================${NC}"

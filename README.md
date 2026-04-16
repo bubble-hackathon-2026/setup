@@ -2,82 +2,73 @@
 
 ## Quick Start
 
-Open your terminal and run:
+A hackathon organizer will share a command in Slack that looks like:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/bubble-hackathon-2026/setup/main/setup.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/bubble-hackathon-2026/setup/main/setup.sh) SERVER_IP
 ```
 
-That's it. The script will:
-
-1. Check your tools (Git, Node.js)
-2. Ask for your name and @bubble.io email (no accounts to create!)
+Paste it into your terminal. It will:
+1. Install Node.js if you don't have it (may ask for your Mac password)
+2. Ask for your name and @bubble.io email
 3. Let you create a new team or join an existing one
-4. Clone your team's project and install dependencies
+4. Set up your project
 
-Then `cd` into your project and run `claude` to start building.
+Then `cd ~/hackathon/<team-name>` and run `claude` to start building.
 
-### Prerequisites
-
-Install these before running the setup script (one time):
-
-1. **Node.js** — Download from [nodejs.org](https://nodejs.org/) (LTS version)
-2. **Claude Code** — Run `npm install -g @anthropic-ai/claude-code` in your terminal
-
-That's all. No GitHub account needed.
+**Only prerequisite:** Install Claude Code first: `npm install -g @anthropic-ai/claude-code`
+(If you don't have npm yet, run the setup command first — it installs Node.js for you — then install Claude Code.)
 
 ### Talking to Claude
 
-Once you're in Claude Code, just talk naturally:
-
 - **"I want to build ..."** — describe your idea and Claude starts coding
-- **"deploy this"** — get a shareable link (uses Vercel, free)
-- **"save my work"** — commit and push your changes
-- **"get my teammate's changes"** — pull the latest code
-- **"make it look like Bubble"** — Claude uses the design reference in the project
+- **"deploy this"** — get a shareable link
+- **"save my work"** — commit and push
+- **"get my teammate's changes"** — pull latest
+- **"make it look like Bubble"** — uses the design reference in the project
 
 ---
 
 ## Admin Guide
 
+### Security Model
+
+- **Barrier**: You need the server IP to do anything. It's only shared in internal Slack.
+- **Enforcement**: A provisioner service (port 8080) sits in front of Gitea and enforces @bubble.io emails **server-side**. The admin token never leaves the server.
+- **Per-team access**: Each team gets a private repo. A Gitea team controls who can read/write it. Users can only access repos they've been added to.
+- **Public GitHub repo**: Contains only the setup script. No server addresses, no tokens, no secrets.
+- **Secrets in code**: Pre-commit hook blocks common credential patterns. CLAUDE.md instructs Claude to use `.env.local`.
+
 ### Architecture
 
-- **Gitea server**: Self-hosted on a small VM ($12/month). Private git repos, per-team access control, auto-provisioned accounts via @bubble.io email. No GitHub accounts needed.
-- **GitHub** (`bubble-hackathon-2026/setup`): Public repo that hosts only the setup script. Users curl from here. No login needed.
-- **Template repo** (`_template` on Gitea): Next.js + Tailwind starter with CLAUDE.md and Bubble design context.
-- **Hosting**: Vercel free tier. Teams deploy via `npx vercel` (Claude handles it).
+```
+Internet
+  |
+  +-- GitHub (public) -----> setup.sh (no secrets)
+  |
+  +-- Server (IP only in Slack)
+        |
+        +-- :8080  Provisioner  (enforces @bubble.io, creates accounts/teams)
+        +-- :3000  Gitea        (git repos, private, per-team access)
+        +-- :2222  Gitea SSH    (alternative git access)
+```
 
-### Initial Setup
+### Setup
 
-1. **Create a VM** with Docker installed.
-   - DigitalOcean: Create a droplet using the "Docker" marketplace image ($12/month, 1GB RAM).
-   - Open ports 3000 (HTTP) and 2222 (git SSH) in the firewall.
-   - Make sure you can `ssh root@<IP>`.
+1. **Create a VM** with Docker: DigitalOcean "Docker" marketplace image ($12/month). Open ports 3000, 8080, 2222.
 
 2. **Run bootstrap:**
    ```bash
-   bash admin/bootstrap.sh <SERVER_IP>
+   bash admin/bootstrap.sh SERVER_IP
    ```
-   This deploys Gitea, creates the template repo, and pushes the setup script to GitHub.
-   Save the admin credentials it prints — you'll need them for teardown.
+   This deploys Gitea + provisioner, creates the template repo, and pushes the setup script to GitHub. Admin credentials are saved locally in `.admin-credentials`.
 
-3. **Share the setup command** in Slack:
+3. **Share in Slack:**
    ```
-   bash <(curl -fsSL https://raw.githubusercontent.com/bubble-hackathon-2026/setup/main/setup.sh)
+   bash <(curl -fsSL https://raw.githubusercontent.com/bubble-hackathon-2026/setup/main/setup.sh) SERVER_IP
    ```
-   No invites needed — anyone with a @bubble.io email can self-provision.
 
-### Security
-
-- **Accounts**: Auto-created, restricted to @bubble.io emails. No self-registration.
-- **Repos**: Private. Per-team access control (teams can only write to their own repo).
-- **Secrets**: Pre-commit hook blocks commits containing API keys/tokens. CLAUDE.md instructs Claude to use `.env.local` for secrets.
-- **Vercel**: Deployed prototypes are public by URL (security by obscurity). Secrets go in via `vercel env add`.
-- **Server**: Temporary — destroyed after the hackathon. No persistent data.
-
-### Update Bubble Design Context
-
-Edit files in `template-overlay/context/`, then re-run `bash admin/bootstrap.sh <IP>` to update the template. Only affects newly created teams.
+No invites needed. Anyone with a @bubble.io email and the server IP can self-provision.
 
 ### Teardown
 
@@ -85,13 +76,6 @@ Edit files in `template-overlay/context/`, then re-run `bash admin/bootstrap.sh 
 bash admin/teardown.sh
 ```
 
-Archives repos (optional), destroys the Gitea server. Then delete the VM from your cloud dashboard. Total: ~5 minutes.
-
 ### Cost
 
-| Item | Cost |
-|------|------|
-| VM (DigitalOcean 1GB) | ~$12/month |
-| Vercel free tier | $0 |
-| Claude Code | Existing licenses |
-| **Total** | **~$12** |
+~$12 total (one small VM for the duration of the hackathon).

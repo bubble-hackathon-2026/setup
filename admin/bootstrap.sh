@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # ============================================================================
-# Bubble Hackathon 2026 — Bootstrap (Gitea)
+# Bubble Hackathon 2026 — Bootstrap
 #
-# Sets up a Gitea server on a remote VM, creates the template repo,
-# and pushes the updated setup script to GitHub for distribution.
+# Sets up Gitea + provisioner on a remote VM, creates the template repo,
+# and pushes the setup script to GitHub for distribution.
 #
 # Usage:
 #   bash admin/bootstrap.sh                    # prompts for server IP
@@ -13,9 +13,16 @@ set -euo pipefail
 #
 # Prerequisites:
 #   - A Linux VM with Docker installed and SSH access as root
-#     (DigitalOcean "Docker" marketplace image works great — $12/month)
-#   - gh CLI authenticated (for pushing the setup script to GitHub)
-#   - Port 3000 (HTTP) and 2222 (SSH) open on the VM
+#     (DigitalOcean "Docker" marketplace image works — $12/month)
+#   - gh CLI authenticated (for pushing setup script to GitHub)
+#   - Ports 3000, 8080, and 2222 open on the VM
+#
+# Security model:
+#   - The Gitea admin token NEVER leaves the server.
+#   - A provisioner service (port 8080) handles account creation.
+#   - It enforces @bubble.io email domain server-side.
+#   - The server IP is NOT stored in the public GitHub repo.
+#   - It's shared only via internal Slack.
 # ============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -47,18 +54,15 @@ echo ""
 SERVER_IP="${1:-}"
 if [ -z "$SERVER_IP" ]; then
     echo "Enter the IP address of your server (a Linux VM with Docker installed)."
-    echo "Tip: Create a DigitalOcean droplet using the 'Docker' marketplace image."
+    echo "Tip: DigitalOcean 'Docker' marketplace image, \$12/month."
     echo ""
     read -r -p "  Server IP: " SERVER_IP
 fi
 
-if [ -z "$SERVER_IP" ]; then
-    fail "Server IP is required."
-fi
+[ -z "$SERVER_IP" ] && fail "Server IP is required."
 
 GITEA_URL="http://$SERVER_IP:3000"
-GITEA_SSH_HOST="$SERVER_IP"
-GITEA_SSH_PORT="2222"
+PROVISIONER_URL="http://$SERVER_IP:8080"
 
 step "Testing SSH connection to $SERVER_IP..."
 if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "root@$SERVER_IP" "echo ok" &>/dev/null; then
@@ -66,62 +70,76 @@ if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "root@$SERVER_IP" "ech
 fi
 info "SSH connected"
 
-# --- Deploy Gitea ---
+# --- Upload server files ---
 
-step "Deploying Gitea on the server..."
+step "Uploading server configuration..."
 
-# Copy docker-compose.yml
-scp -o StrictHostKeyChecking=no "$SCRIPT_DIR/server/docker-compose.yml" "root@$SERVER_IP:~/docker-compose.yml" 2>/dev/null
-info "Docker Compose file uploaded"
+scp -o StrictHostKeyChecking=no \
+    "$SCRIPT_DIR/server/docker-compose.yml" \
+    "$SCRIPT_DIR/server/provisioner.py" \
+    "root@$SERVER_IP:~/" 2>/dev/null
 
-# Start Gitea
+info "Files uploaded"
+
+# --- Start Gitea (without provisioner first — need admin token) ---
+
+step "Starting Gitea..."
+
 ssh -o StrictHostKeyChecking=no "root@$SERVER_IP" "
     export GITEA_URL='$GITEA_URL'
     export GITEA_DOMAIN='$SERVER_IP'
-    cd ~ && docker compose up -d 2>&1 | tail -3
+    export ADMIN_TOKEN='placeholder'
+    cd ~ && docker compose up -d gitea 2>&1 | tail -3
 " 2>/dev/null
-info "Gitea container started"
 
-# Wait for Gitea to be ready
-echo "  Waiting for Gitea to start..."
-for i in $(seq 1 60); do
-    if curl -sf "$GITEA_URL/api/v1/version" &>/dev/null; then
-        break
-    fi
+echo "  Waiting for Gitea..."
+for _ in $(seq 1 60); do
+    curl -sf "$GITEA_URL/api/v1/version" &>/dev/null && break
     sleep 2
 done
+curl -sf "$GITEA_URL/api/v1/version" &>/dev/null || fail "Gitea didn't start. Check: ssh root@$SERVER_IP 'docker logs gitea'"
+info "Gitea running at $GITEA_URL"
 
-if ! curl -sf "$GITEA_URL/api/v1/version" &>/dev/null; then
-    fail "Gitea didn't start within 120 seconds. Check: ssh root@$SERVER_IP 'docker logs gitea'"
-fi
-info "Gitea is running at $GITEA_URL"
-
-# --- Create admin user ---
+# --- Create admin user + token ---
 
 step "Creating admin user..."
 
-# Create admin via Gitea CLI inside the container
 ssh -o StrictHostKeyChecking=no "root@$SERVER_IP" "
     docker exec gitea gitea admin user create \
         --username '$ADMIN_USER' \
         --password '$ADMIN_PASS' \
         --email '$ADMIN_EMAIL' \
         --admin \
-        --must-change-password=false \
-        2>&1
+        --must-change-password=false 2>&1
 " 2>/dev/null | grep -v "^$" || true
-info "Admin user created: $ADMIN_USER"
 
-# Get API token
 ADMIN_TOKEN=$(curl -sf -X POST "$GITEA_URL/api/v1/users/$ADMIN_USER/tokens" \
     -u "$ADMIN_USER:$ADMIN_PASS" \
     -H "Content-Type: application/json" \
-    -d '{"name":"bootstrap","scopes":["all"]}' | python3 -c "import sys,json; print(json.load(sys.stdin)['sha1'])")
+    -d '{"name":"admin","scopes":["all"]}' \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['sha1'])")
 
-if [ -z "$ADMIN_TOKEN" ]; then
-    fail "Could not create admin API token."
-fi
-info "Admin API token generated"
+[ -z "$ADMIN_TOKEN" ] && fail "Could not create admin token."
+info "Admin token generated"
+
+# --- Start provisioner with the real token ---
+
+step "Starting provisioner service..."
+
+ssh -o StrictHostKeyChecking=no "root@$SERVER_IP" "
+    export GITEA_URL='$GITEA_URL'
+    export GITEA_DOMAIN='$SERVER_IP'
+    export ADMIN_TOKEN='$ADMIN_TOKEN'
+    cd ~ && docker compose up -d 2>&1 | tail -3
+" 2>/dev/null
+
+# Wait for provisioner
+for _ in $(seq 1 30); do
+    curl -sf "$PROVISIONER_URL/health" &>/dev/null && break
+    sleep 1
+done
+curl -sf "$PROVISIONER_URL/health" &>/dev/null || fail "Provisioner didn't start."
+info "Provisioner running at $PROVISIONER_URL"
 
 # --- Create organization ---
 
@@ -130,7 +148,7 @@ step "Creating hackathon organization..."
 curl -sf -X POST "$GITEA_URL/api/v1/orgs" \
     -H "Authorization: token $ADMIN_TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{\"username\":\"$GITEA_ORG\",\"visibility\":\"private\",\"description\":\"Bubble Hackathon 2026\"}" \
+    -d "{\"username\":\"$GITEA_ORG\",\"visibility\":\"private\"}" \
     >/dev/null 2>&1 || true
 
 info "Organization '$GITEA_ORG' created"
@@ -144,42 +162,29 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 cd "$TMPDIR"
 
-# Scaffold Next.js project
-echo "  Scaffolding Next.js project (this takes a moment)..."
+echo "  Scaffolding Next.js project (takes a moment)..."
 yes "" | npx --yes create-next-app@latest hackathon-template \
-    --typescript \
-    --tailwind \
-    --eslint \
-    --app \
-    --no-src-dir \
-    --import-alias "@/*" \
-    --use-npm \
-    2>/dev/null || true
+    --typescript --tailwind --eslint --app --no-src-dir \
+    --import-alias "@/*" --use-npm 2>/dev/null || true
 
-if [ ! -d hackathon-template ]; then
-    fail "create-next-app failed. Check your Node.js installation and try again."
-fi
+[ ! -d hackathon-template ] && fail "create-next-app failed."
 cd hackathon-template
 
 # Overlay hackathon files
 cp "$REPO_ROOT/template-overlay/CLAUDE.md" .
 cp -r "$REPO_ROOT/template-overlay/context" .
 cp -r "$REPO_ROOT/template-overlay/.githooks" .
-mkdir -p context/screenshots
-touch context/screenshots/.gitkeep
+mkdir -p context/screenshots && touch context/screenshots/.gitkeep
 cat "$REPO_ROOT/template-overlay/.gitignore-extra" >> .gitignore
 
-# Create .env.example
 cat > .env.example << 'ENVEOF'
 # Copy this file to .env.local and fill in your values.
 # .env.local is gitignored — your secrets stay on your machine.
 #
-# Example:
 # OPENAI_API_KEY=sk-...
 # NEXT_PUBLIC_MAP_KEY=pk-...
 ENVEOF
 
-# Add prepare script for git hooks
 node -e "
 const pkg = require('./package.json');
 pkg.scripts = pkg.scripts || {};
@@ -187,106 +192,48 @@ pkg.scripts.prepare = 'git config core.hooksPath .githooks 2>/dev/null || true';
 require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
 "
 
-info "Template assembled"
-
-# Create the repo on Gitea
+# Create repo on Gitea
 curl -sf -X POST "$GITEA_URL/api/v1/orgs/$GITEA_ORG/repos" \
     -H "Authorization: token $ADMIN_TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{\"name\":\"$GITEA_TEMPLATE_REPO\",\"private\":true,\"description\":\"Hackathon starter template\",\"template\":true,\"default_branch\":\"main\"}" \
+    -d "{\"name\":\"$GITEA_TEMPLATE_REPO\",\"private\":true,\"template\":true,\"default_branch\":\"main\"}" \
     >/dev/null 2>&1 || true
 
-# Push template files
-git init -b main
-git add -A
-git commit -m "Initial hackathon template" --quiet
+git init -b main && git add -A && git commit -m "Initial hackathon template" --quiet
 git remote add origin "$GITEA_URL/$GITEA_ORG/$GITEA_TEMPLATE_REPO.git"
-
-# Use admin credentials for push
 git -c "http.extraHeader=Authorization: token $ADMIN_TOKEN" push -u origin main --force 2>/dev/null
 
-info "Template repo ready at $GITEA_URL/$GITEA_ORG/$GITEA_TEMPLATE_REPO"
+info "Template repo ready"
 
-# --- Store admin token on the Gitea server (NOT in the public GitHub repo) ---
+# --- Save admin credentials locally (NOT pushed to GitHub) ---
 
-step "Storing provisioner token on the Gitea server..."
-
-# Create a public _config repo on Gitea to serve the token.
-# This is only accessible if you know the server IP (shared via internal Slack).
-curl -sf -X POST "$GITEA_URL/api/v1/orgs/$GITEA_ORG/repos" \
-    -H "Authorization: token $ADMIN_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "{\"name\":\"_config\",\"private\":false,\"description\":\"Setup config (auto-generated)\"}" \
-    >/dev/null 2>&1 || true
-
-# Push the token as a file in the _config repo
-cd "$TMPDIR"
-rm -rf _config && mkdir _config && cd _config
-echo "$ADMIN_TOKEN" > token
-git init -b main
-git add -A
-git commit -m "Provisioner token" --quiet
-git remote add origin "$GITEA_URL/$GITEA_ORG/_config.git"
-git -c "http.extraHeader=Authorization: token $ADMIN_TOKEN" push -u origin main --force 2>/dev/null
-
-info "Token stored at $GITEA_URL/$GITEA_ORG/_config (accessible only via server IP)"
-
-# --- Update config.sh (GITEA_URL only — no token) ---
-
-step "Saving configuration..."
+step "Saving credentials..."
 
 cd "$REPO_ROOT"
 
-# config.sh goes to the PUBLIC GitHub repo — only the server URL, no secrets
-cat > config.sh << CFGEOF
-#!/usr/bin/env bash
-# Shared configuration for hackathon tooling.
-# Generated by admin/bootstrap.sh — re-run bootstrap to update.
-# NOTE: No secrets here — this file is on a public GitHub repo.
-# The admin token is served from the Gitea server itself.
-
-# GitHub (hosts the setup script only)
-GITHUB_ORG="$GITHUB_ORG"
-GITHUB_SETUP_REPO="$GITHUB_SETUP_REPO"
-
-# Gitea server
-GITEA_URL="$GITEA_URL"
-GITEA_ORG="$GITEA_ORG"
-GITEA_TEMPLATE_REPO="$GITEA_TEMPLATE_REPO"
-
-# Local
-HACKATHON_DIR="\$HOME/hackathon"
-CFGEOF
-
-info "config.sh updated (server URL only — token stored on Gitea)"
-
-# Save admin credentials locally for the admin (NOT pushed to GitHub)
 cat > .admin-credentials << ADMEOF
 # Hackathon admin credentials — DO NOT COMMIT
-# Generated by bootstrap.sh on $(date)
+# Generated $(date)
+SERVER_IP=$SERVER_IP
 GITEA_URL=$GITEA_URL
+PROVISIONER_URL=$PROVISIONER_URL
 ADMIN_USER=$ADMIN_USER
 ADMIN_PASS=$ADMIN_PASS
 ADMIN_TOKEN=$ADMIN_TOKEN
 ADMEOF
 chmod 600 .admin-credentials
 
-# Make sure admin credentials are gitignored
-if ! grep -q '.admin-credentials' .gitignore 2>/dev/null; then
-    echo '.admin-credentials' >> .gitignore
-fi
+info "Admin credentials saved in .admin-credentials (gitignored)"
 
-info "Admin credentials saved locally in .admin-credentials"
+# --- Push setup script to GitHub (no secrets) ---
 
-# --- Push setup script to GitHub ---
-
-step "Pushing updated setup script to GitHub..."
+step "Pushing setup script to GitHub..."
 
 git add -A
-git diff --cached --quiet || git commit -m "Update config with Gitea server URL" --quiet
-git push origin main 2>/dev/null || warn "Could not push to GitHub (non-critical)"
+git diff --cached --quiet || git commit -m "Update setup script" --quiet
+git push origin main 2>/dev/null || warn "Could not push to GitHub"
 
-info "Setup script updated on GitHub"
+info "Setup script on GitHub (no server info — just the script)"
 
 # --- Done ---
 
@@ -295,12 +242,17 @@ echo -e "${GREEN}${BOLD}========================================${NC}"
 echo -e "${GREEN}${BOLD}   Bootstrap complete!${NC}"
 echo -e "${GREEN}${BOLD}========================================${NC}"
 echo ""
-echo "  Gitea server: $GITEA_URL"
+echo "  Gitea:        $GITEA_URL"
+echo "  Provisioner:  $PROVISIONER_URL"
 echo "  Admin login:  $ADMIN_USER / $ADMIN_PASS"
 echo ""
-echo -e "  ${YELLOW}Admin credentials saved in .admin-credentials (not committed to git).${NC}"
+echo -e "  ${BOLD}Share this command in Slack:${NC}"
 echo ""
-echo "  Share this command with participants:"
+echo -e "  ${BLUE}bash <(curl -fsSL https://raw.githubusercontent.com/$GITHUB_ORG/$GITHUB_SETUP_REPO/main/setup.sh) $SERVER_IP${NC}"
 echo ""
-echo -e "  ${BLUE}bash <(curl -fsSL https://raw.githubusercontent.com/$GITHUB_ORG/$GITHUB_SETUP_REPO/main/setup.sh)${NC}"
+echo -e "  ${BOLD}Security:${NC}"
+echo "  - The admin token stays on the server (never in GitHub)"
+echo "  - The server IP is only in the Slack message above"
+echo "  - The provisioner enforces @bubble.io emails server-side"
+echo "  - Credentials saved locally in .admin-credentials"
 echo ""
