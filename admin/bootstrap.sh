@@ -93,11 +93,18 @@ ssh -o StrictHostKeyChecking=no "root@$SERVER_IP" "
 " 2>/dev/null
 
 echo "  Waiting for Gitea..."
+# Note: Gitea returns 403 on /api/v1/version when REQUIRE_SIGNIN_VIEW=true.
+# 403 still means the server is up — we only care that it's responding.
+is_up() {
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" "$GITEA_URL/api/v1/version" 2>/dev/null || echo "000")
+    [ "$code" != "000" ] && [ "$code" != "502" ] && [ "$code" != "503" ]
+}
 for _ in $(seq 1 60); do
-    curl -sf "$GITEA_URL/api/v1/version" &>/dev/null && break
+    is_up && break
     sleep 2
 done
-curl -sf "$GITEA_URL/api/v1/version" &>/dev/null || fail "Gitea didn't start. Check: ssh root@$SERVER_IP 'docker logs gitea'"
+is_up || fail "Gitea didn't start. Check: ssh root@$SERVER_IP 'docker logs gitea'"
 info "Gitea running at $GITEA_URL"
 
 # --- Create admin user + token ---
