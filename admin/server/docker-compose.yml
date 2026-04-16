@@ -16,7 +16,7 @@ services:
       - GITEA__server__SSH_DOMAIN=${GITEA_DOMAIN:-localhost}
       - GITEA__server__LFS_START_SERVER=false
       - GITEA__service__DISABLE_REGISTRATION=true
-      - GITEA__service__REQUIRE_SIGNIN_VIEW=true
+      - GITEA__service__REQUIRE_SIGNIN_VIEW=false
       - GITEA__service__ALLOWED_DOMAINS=bubble.io
       - GITEA__openid__ENABLE_OPENID_SIGNIN=false
       - GITEA__openid__ENABLE_OPENID_SIGNUP=false
