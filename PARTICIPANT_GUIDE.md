@@ -110,7 +110,7 @@ That's normal! Password fields in Terminal don't show what you type. Type your M
 Type `/clear` to reset the conversation, or ask Claude "start over with a simpler version." Don't spend more than a few minutes on any one issue — just try a different approach.
 
 **Anything else**
-Post in #hackathon in Slack, or find a nearby organizer — we'll get you unstuck.
+Post in #offsite-hackathon in Slack, or find a nearby organizer — we'll get you unstuck.
 
 ---
 
