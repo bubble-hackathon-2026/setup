@@ -11,7 +11,10 @@ import base64
 import json
 import os
 import secrets
+import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
@@ -21,6 +24,84 @@ TOKEN = os.environ["ADMIN_TOKEN"]
 ORG = os.environ.get("GITEA_ORG", "hackathon")
 TEMPLATE = os.environ.get("TEMPLATE_REPO", "_template")
 DOMAIN = os.environ.get("ALLOWED_DOMAIN", "bubble.io")
+SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
+
+# In-memory verification code store: email -> (code, expires_at)
+CODES = {}
+CODES_LOCK = threading.Lock()
+CODE_TTL = 600  # 10 minutes
+
+
+def store_code(email: str, code: str) -> None:
+    now = time.time()
+    with CODES_LOCK:
+        CODES[email] = (code, now + CODE_TTL)
+        # Opportunistic GC of expired codes
+        for e in list(CODES.keys()):
+            if CODES[e][1] < now:
+                del CODES[e]
+
+
+def verify_code(email: str, code: str) -> bool:
+    with CODES_LOCK:
+        entry = CODES.get(email)
+        if not entry:
+            return False
+        stored, expires = entry
+        if time.time() > expires:
+            del CODES[email]
+            return False
+        if stored != code:
+            return False
+        # Single-use
+        del CODES[email]
+        return True
+
+
+def slack_api(method: str, **params) -> dict:
+    """Call a Slack Web API method."""
+    if not SLACK_TOKEN:
+        return {"ok": False, "error": "slack_not_configured"}
+    url = f"https://slack.com/api/{method}"
+    body = urlencode({k: v for k, v in params.items() if v is not None}).encode()
+    req = Request(url, data=body, method="POST", headers={
+        "Authorization": f"Bearer {SLACK_TOKEN}",
+        "Content-Type": "application/x-www-form-urlencoded",
+    })
+    try:
+        with urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        return {"ok": False, "error": f"slack_request_failed: {e}"}
+
+
+def send_verification_dm(email: str, code: str) -> tuple:
+    """Send a verification DM via Slack. Returns (success, error_msg)."""
+    lookup = slack_api("users.lookupByEmail", email=email)
+    if not lookup.get("ok"):
+        err = lookup.get("error", "unknown")
+        if err == "users_not_found":
+            return False, "That email isn't in the Bubble Slack workspace"
+        return False, f"Slack lookup failed: {err}"
+
+    user_id = lookup["user"]["id"]
+
+    # Open a DM channel
+    im = slack_api("conversations.open", users=user_id)
+    if not im.get("ok"):
+        return False, f"Could not open DM: {im.get('error', 'unknown')}"
+
+    channel = im["channel"]["id"]
+
+    text = (
+        f":lock: Your Bubble Hackathon verification code is *{code}*\n"
+        f"Paste it into the terminal prompt. It expires in 10 minutes."
+    )
+    post = slack_api("chat.postMessage", channel=channel, text=text)
+    if not post.get("ok"):
+        return False, f"Could not send DM: {post.get('error', 'unknown')}"
+
+    return True, ""
 
 
 def api(method, path, data=None):
@@ -85,7 +166,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "not found"})
 
     def do_POST(self):
-        if self.path == "/provision":
+        if self.path == "/request-code":
+            self.request_code()
+        elif self.path == "/provision":
             self.provision()
         elif self.path == "/create-team":
             self.create_team()
@@ -96,14 +179,46 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- Handlers ---
 
-    def provision(self):
-        """Create account for a @bubble.io user, return git credentials."""
+    def request_code(self):
+        """Send a 6-digit verification code via Slack DM."""
         d = self.body()
         email = d.get("email", "").strip().lower()
-        name = d.get("name", "").strip()
 
         if not email.endswith(f"@{DOMAIN}"):
             self.send_json(403, {"error": f"Only @{DOMAIN} emails allowed"})
+            return
+
+        if not SLACK_TOKEN:
+            self.send_json(500, {"error": "Slack verification not configured on this server"})
+            return
+
+        code = f"{secrets.randbelow(900000) + 100000}"  # 6-digit, 100000-999999
+
+        ok, err = send_verification_dm(email, code)
+        if not ok:
+            self.send_json(403, {"error": err})
+            return
+
+        store_code(email, code)
+        self.send_json(200, {"status": "Code sent via Slack DM"})
+
+    def provision(self):
+        """Create account for a @bubble.io user, return git credentials.
+
+        Requires a valid verification code obtained via /request-code.
+        """
+        d = self.body()
+        email = d.get("email", "").strip().lower()
+        name = d.get("name", "").strip()
+        code = d.get("code", "").strip()
+
+        if not email.endswith(f"@{DOMAIN}"):
+            self.send_json(403, {"error": f"Only @{DOMAIN} emails allowed"})
+            return
+
+        # Verification is REQUIRED — this proves the user owns the email.
+        if not verify_code(email, code):
+            self.send_json(403, {"error": "Invalid or expired verification code"})
             return
 
         username = email.split("@")[0].replace(".", "-").replace("+", "-").lower()

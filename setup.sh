@@ -120,14 +120,31 @@ echo ""
 read -r -p "  Your name (e.g., Jane Smith): " user_name
 read -r -p "  Your @bubble.io email: " user_email
 
-# --- Create account via provisioner (email enforced server-side) ---
+# --- Verify identity via Slack DM ---
+
+step "Verifying your email..."
+
+code_result=$(curl -s -X POST "$PROVISIONER/request-code" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\": \"$user_email\"}" 2>/dev/null || echo '{"error":"cannot reach server"}')
+
+code_error=$(echo "$code_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))" 2>/dev/null || echo "parse error")
+if [ -n "$code_error" ]; then
+    fail "$code_error"
+    exit 1
+fi
+
+info "Check Slack — we just sent you a DM with a 6-digit code"
+echo ""
+read -r -p "  Enter the code: " verify_code
+
+# --- Create account (provisioner verifies the code) ---
 
 step "Setting up your account..."
 
-# -s (silent) but NOT -f (fail on HTTP error), so we get the server's error body
 provision_result=$(curl -s -X POST "$PROVISIONER/provision" \
     -H "Content-Type: application/json" \
-    -d "{\"name\": \"$user_name\", \"email\": \"$user_email\"}" 2>/dev/null || echo '{"error":"cannot reach server"}')
+    -d "{\"name\": \"$user_name\", \"email\": \"$user_email\", \"code\": \"$verify_code\"}" 2>/dev/null || echo '{"error":"cannot reach server"}')
 
 # Check for errors
 error=$(echo "$provision_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))" 2>/dev/null || echo "parse error")

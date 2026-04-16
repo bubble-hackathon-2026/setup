@@ -61,6 +61,33 @@ fi
 
 [ -z "$SERVER_IP" ] && fail "Server IP is required."
 
+# --- Get Slack bot token (for email verification via DM) ---
+
+SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-}"
+# Read from existing credentials file if present and not in env
+if [ -z "$SLACK_BOT_TOKEN" ] && [ -f "$REPO_ROOT/.admin-credentials" ]; then
+    SLACK_BOT_TOKEN=$(grep -E '^SLACK_BOT_TOKEN=' "$REPO_ROOT/.admin-credentials" 2>/dev/null | cut -d= -f2- || echo "")
+fi
+
+if [ -z "$SLACK_BOT_TOKEN" ]; then
+    echo ""
+    echo "Slack bot token needed for email verification (participants will get"
+    echo "a DM with a code to prove they own their @bubble.io email)."
+    echo ""
+    echo "To get one: https://api.slack.com/apps -> Create New App -> From scratch"
+    echo "  Workspace: bubble-app"
+    echo "  Scopes (Bot Token Scopes): chat:write, users:read.email, im:write"
+    echo "  Then: Install to Workspace -> copy 'Bot User OAuth Token' (starts with xoxb-)"
+    echo ""
+    read -r -p "  Slack bot token (xoxb-...): " SLACK_BOT_TOKEN
+fi
+
+[ -z "$SLACK_BOT_TOKEN" ] && fail "Slack bot token is required."
+
+if [[ ! "$SLACK_BOT_TOKEN" =~ ^xoxb- ]]; then
+    warn "Token doesn't start with 'xoxb-' — is that really a bot token?"
+fi
+
 GITEA_URL="http://$SERVER_IP:3000"
 PROVISIONER_URL="http://$SERVER_IP:8080"
 
@@ -181,6 +208,7 @@ rssh "
     export GITEA_URL='$GITEA_URL'
     export GITEA_DOMAIN='$SERVER_IP'
     export ADMIN_TOKEN='$ADMIN_TOKEN'
+    export SLACK_BOT_TOKEN='$SLACK_BOT_TOKEN'
     cd ~ && docker compose up -d 2>&1 | tail -3
 "
 
@@ -271,6 +299,7 @@ PROVISIONER_URL=$PROVISIONER_URL
 ADMIN_USER=$ADMIN_USER
 ADMIN_PASS=$ADMIN_PASS
 ADMIN_TOKEN=$ADMIN_TOKEN
+SLACK_BOT_TOKEN=$SLACK_BOT_TOKEN
 ADMEOF
 chmod 600 .admin-credentials
 

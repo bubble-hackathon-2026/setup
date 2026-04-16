@@ -37,6 +37,7 @@ services:
       - GITEA_ORG=hackathon
       - TEMPLATE_REPO=_template
       - ALLOWED_DOMAIN=bubble.io
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
     volumes:
       - ./provisioner.py:/app/provisioner.py:ro
     command: python /app/provisioner.py
