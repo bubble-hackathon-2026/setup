@@ -64,41 +64,56 @@ fi
 GITEA_URL="http://$SERVER_IP:3000"
 PROVISIONER_URL="http://$SERVER_IP:8080"
 
+# SSH connection multiplexing — reuses one TCP connection across all commands.
+# Prevents UFW's default SSH rate-limiting (6 conns per 30s) from blocking us.
+SSH_CTRL="/tmp/ssh-hackathon-$$"
+SSH_OPTS=(-o StrictHostKeyChecking=no -o ControlMaster=auto -o "ControlPath=$SSH_CTRL" -o ControlPersist=10m)
+cleanup_ssh() { ssh "${SSH_OPTS[@]}" -O exit "root@$SERVER_IP" 2>/dev/null || true; rm -f "$SSH_CTRL"; }
+trap cleanup_ssh EXIT
+
+rssh() { ssh "${SSH_OPTS[@]}" "root@$SERVER_IP" "$@"; }
+rscp() { scp "${SSH_OPTS[@]}" "$@"; }
+
 step "Testing SSH connection to $SERVER_IP..."
-if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "root@$SERVER_IP" "echo ok" &>/dev/null; then
+if ! rssh -o ConnectTimeout=10 "echo ok" &>/dev/null; then
     fail "Cannot SSH to root@$SERVER_IP. Make sure the VM is running and you have SSH access."
 fi
-info "SSH connected"
+info "SSH connected (multiplexed)"
+
+# --- Disable UFW SSH rate-limiting (prevents connection refused during bootstrap) ---
+
+step "Configuring server firewall..."
+rssh "command -v ufw >/dev/null && { ufw delete limit ssh 2>/dev/null; ufw allow ssh 2>/dev/null; } || true" &>/dev/null
+info "Firewall configured"
 
 # --- Upload server files ---
 
 step "Uploading server configuration..."
-
-scp -o StrictHostKeyChecking=no \
+rscp \
     "$SCRIPT_DIR/server/docker-compose.yml" \
     "$SCRIPT_DIR/server/provisioner.py" \
-    "root@$SERVER_IP:~/" 2>/dev/null
-
+    "root@$SERVER_IP:~/"
 info "Files uploaded"
 
 # --- Start Gitea (without provisioner first — need admin token) ---
 
 step "Starting Gitea..."
 
-ssh -o StrictHostKeyChecking=no "root@$SERVER_IP" "
+rssh "
     export GITEA_URL='$GITEA_URL'
     export GITEA_DOMAIN='$SERVER_IP'
     export ADMIN_TOKEN='placeholder'
     cd ~ && docker compose up -d gitea 2>&1 | tail -3
-" 2>/dev/null
+"
 
 echo "  Waiting for Gitea..."
 # Note: Gitea returns 403 on /api/v1/version when REQUIRE_SIGNIN_VIEW=true.
 # 403 still means the server is up — we only care that it's responding.
 is_up() {
     local code
-    code=$(curl -s -o /dev/null -w "%{http_code}" "$GITEA_URL/api/v1/version" 2>/dev/null || echo "000")
-    [ "$code" != "000" ] && [ "$code" != "502" ] && [ "$code" != "503" ]
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$GITEA_URL/api/v1/version" 2>/dev/null)
+    # Match any 2xx/3xx/4xx response (valid HTTP reply). 000/5xx = not ready.
+    [[ "$code" =~ ^[234][0-9][0-9]$ ]]
 }
 for _ in $(seq 1 60); do
     is_up && break
@@ -111,34 +126,63 @@ info "Gitea running at $GITEA_URL"
 
 step "Creating admin user..."
 
-ssh -o StrictHostKeyChecking=no "root@$SERVER_IP" "
-    docker exec gitea gitea admin user create \
+# Run as 'git' user inside the container — Gitea refuses to run as root.
+set +e
+create_output=$(rssh "
+    docker exec -u git gitea gitea admin user create \
         --username '$ADMIN_USER' \
         --password '$ADMIN_PASS' \
         --email '$ADMIN_EMAIL' \
         --admin \
         --must-change-password=false 2>&1
-" 2>/dev/null | grep -v "^$" || true
+" 2>&1)
+create_status=$?
+set -e
 
-ADMIN_TOKEN=$(curl -sf -X POST "$GITEA_URL/api/v1/users/$ADMIN_USER/tokens" \
+if [ $create_status -ne 0 ] && ! echo "$create_output" | grep -qi "already exists\|successfully created\|new user"; then
+    echo "$create_output"
+    fail "SSH or admin creation failed (exit $create_status)"
+fi
+
+if echo "$create_output" | grep -qi "already exists"; then
+    warn "Admin user already exists — will reuse"
+elif echo "$create_output" | grep -qi "successfully created\|new user"; then
+    info "Admin user created: $ADMIN_USER"
+else
+    echo "$create_output"
+    fail "Admin user creation failed (see output above)"
+fi
+
+# Create admin API token
+token_response=$(curl -sf -X POST "$GITEA_URL/api/v1/users/$ADMIN_USER/tokens" \
     -u "$ADMIN_USER:$ADMIN_PASS" \
     -H "Content-Type: application/json" \
-    -d '{"name":"admin","scopes":["all"]}' \
-    | python3 -c "import sys,json; print(json.load(sys.stdin)['sha1'])")
+    -d '{"name":"admin","scopes":["all"]}' 2>&1 || echo "")
 
-[ -z "$ADMIN_TOKEN" ] && fail "Could not create admin token."
+ADMIN_TOKEN=$(echo "$token_response" | python3 -c "
+import sys, json
+try:
+    print(json.loads(sys.stdin.read()).get('sha1', ''))
+except Exception:
+    pass
+" 2>/dev/null)
+
+if [ -z "$ADMIN_TOKEN" ]; then
+    echo "Token API response: $token_response"
+    fail "Could not create admin token. The admin user may not have the expected password."
+fi
 info "Admin token generated"
 
 # --- Start provisioner with the real token ---
 
 step "Starting provisioner service..."
 
-ssh -o StrictHostKeyChecking=no "root@$SERVER_IP" "
+rssh "
     export GITEA_URL='$GITEA_URL'
     export GITEA_DOMAIN='$SERVER_IP'
     export ADMIN_TOKEN='$ADMIN_TOKEN'
     cd ~ && docker compose up -d 2>&1 | tail -3
-" 2>/dev/null
+"
 
 # Wait for provisioner
 for _ in $(seq 1 30); do
