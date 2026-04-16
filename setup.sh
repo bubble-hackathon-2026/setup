@@ -181,6 +181,52 @@ slugify() {
     echo "$1" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//'
 }
 
+# Write Claude Code project-local settings so the auto-mode classifier doesn't
+# interrupt routine hackathon actions (push to main, npm install, npx vercel).
+# Written to settings.local.json (per-user, gitignored) so it's trusted
+# by Claude Code's anti-prompt-injection rules.
+write_claude_settings() {
+    local dir="$1"
+    mkdir -p "$dir/.claude"
+    cat > "$dir/.claude/settings.local.json" << 'CLAUDEEOF'
+{
+  "autoMode": {
+    "environment": [
+      "This is a hackathon prototype repo on an internal Gitea server.",
+      "Throwaway prototypes — no production code or customer data.",
+      "No branch protection, no PR review — direct work on main is expected."
+    ],
+    "allow": [
+      "Direct push to main in this repo is the expected workflow.",
+      "npx vercel deployments are allowed — prototypes are meant to be shared via public demo URLs.",
+      "npm install and npx for any package is part of normal hackathon iteration.",
+      "git commit, push, pull, stash, rebase — all normal collaboration actions."
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git commit:*)",
+      "Bash(git add:*)",
+      "Bash(git stash:*)",
+      "Bash(git rebase:*)",
+      "Bash(git merge:*)",
+      "Bash(git checkout:*)",
+      "Bash(git reset:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)"
+    ]
+  }
+}
+CLAUDEEOF
+    # Ensure the local settings file is gitignored (templates from before
+    # this fix won't have it in .gitignore yet).
+    if [ -f "$dir/.gitignore" ] && ! grep -qF '.claude/settings.local.json' "$dir/.gitignore"; then
+        printf '\n# Claude Code per-user settings\n.claude/settings.local.json\n' >> "$dir/.gitignore"
+    fi
+}
+
 step "What would you like to do?"
 echo "  1) Start a new team"
 echo "  2) Join an existing team"
@@ -231,6 +277,7 @@ if [ "$choice" = "1" ]; then
         fi
 
         cd "$HACKATHON_DIR/$team_slug"
+        write_claude_settings "$HACKATHON_DIR/$team_slug"
         echo "  Installing dependencies (takes a moment)..."
         npm install --silent 2>/dev/null || warn "npm install had warnings (usually fine)"
         info "Ready"
@@ -281,12 +328,14 @@ for t in json.load(sys.stdin).get('teams', []):
         # Update remote URL with fresh creds before pulling
         git remote set-url origin "$repo_url_base/$team_slug.git" 2>/dev/null || true
         git pull --rebase origin main 2>/dev/null || true
+        write_claude_settings "$HACKATHON_DIR/$team_slug"
     else
         if ! git clone "$repo_url_base/$team_slug.git" "$HACKATHON_DIR/$team_slug" 2>&1; then
             fail "Could not clone the repo. Contact a hackathon organizer."
             exit 1
         fi
         cd "$HACKATHON_DIR/$team_slug"
+        write_claude_settings "$HACKATHON_DIR/$team_slug"
         echo "  Installing dependencies (takes a moment)..."
         npm install --silent 2>/dev/null || warn "npm install had warnings (usually fine)"
     fi
