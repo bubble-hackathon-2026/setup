@@ -2,21 +2,20 @@
 set -euo pipefail
 
 # ============================================================================
-# Bubble Hackathon 2026 — Bootstrap
+# Bubble Hackathon 2026 — Bootstrap (Gitea)
 #
-# One-time setup: creates the GitHub org's repos and configuration.
-# Run from the root of the bubble-hackathon-2026/ directory.
+# Sets up a Gitea server on a remote VM, creates the template repo,
+# and pushes the updated setup script to GitHub for distribution.
+#
+# Usage:
+#   bash admin/bootstrap.sh                    # prompts for server IP
+#   bash admin/bootstrap.sh 203.0.113.10       # use this IP directly
 #
 # Prerequisites:
-#   - gh CLI authenticated with an account that owns the org
-#   - The GitHub org must already exist (create at github.com/organizations/plan)
-#   - Token needs admin:org scope: gh auth refresh -h github.com -s admin:org
-#
-# This script:
-#   1. Configures org settings (member permissions)
-#   2. Creates the _template repo (Next.js + Tailwind + CLAUDE.md + context)
-#   3. Pushes this entire directory to the public 'setup' repo on GitHub
-#   4. Turns the local directory into a git clone of the setup repo
+#   - A Linux VM with Docker installed and SSH access as root
+#     (DigitalOcean "Docker" marketplace image works great — $12/month)
+#   - gh CLI authenticated (for pushing the setup script to GitHub)
+#   - Port 3000 (HTTP) and 2222 (SSH) open on the VM
 # ============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -35,29 +34,106 @@ warn() { echo -e "  ${YELLOW}!${NC} $1"; }
 fail() { echo -e "  ${RED}x${NC} $1"; exit 1; }
 step() { echo -e "\n${BOLD}$1${NC}"; }
 
+ADMIN_USER="hackathon-admin"
+ADMIN_PASS=$(openssl rand -hex 16)
+ADMIN_EMAIL="hackathon-admin@bubble.io"
+
 echo ""
 echo -e "${BOLD}Bubble Hackathon 2026 — Bootstrap${NC}"
 echo ""
 
-# --- Verify org exists ---
+# --- Get server IP ---
 
-step "Verifying GitHub org '$HACKATHON_ORG'..."
-if ! gh api "orgs/$HACKATHON_ORG" --silent &>/dev/null 2>&1; then
-    fail "Org '$HACKATHON_ORG' not found. Create it first at: https://github.com/organizations/plan"
+SERVER_IP="${1:-}"
+if [ -z "$SERVER_IP" ]; then
+    echo "Enter the IP address of your server (a Linux VM with Docker installed)."
+    echo "Tip: Create a DigitalOcean droplet using the 'Docker' marketplace image."
+    echo ""
+    read -r -p "  Server IP: " SERVER_IP
 fi
-info "Org exists"
 
-# --- Configure org settings ---
+if [ -z "$SERVER_IP" ]; then
+    fail "Server IP is required."
+fi
 
-step "Configuring org settings..."
+GITEA_URL="http://$SERVER_IP:3000"
+GITEA_SSH_HOST="$SERVER_IP"
+GITEA_SSH_PORT="2222"
 
-# Allow all members to create private repos and have write access by default
-gh api -X PATCH "orgs/$HACKATHON_ORG" \
-    -f default_repository_permission=write \
-    -F members_can_create_private_repositories=true \
-    --silent 2>/dev/null || true
+step "Testing SSH connection to $SERVER_IP..."
+if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "root@$SERVER_IP" "echo ok" &>/dev/null; then
+    fail "Cannot SSH to root@$SERVER_IP. Make sure the VM is running and you have SSH access."
+fi
+info "SSH connected"
 
-info "Member permissions set (write access, can create repos)"
+# --- Deploy Gitea ---
+
+step "Deploying Gitea on the server..."
+
+# Copy docker-compose.yml
+scp -o StrictHostKeyChecking=no "$SCRIPT_DIR/server/docker-compose.yml" "root@$SERVER_IP:~/docker-compose.yml" 2>/dev/null
+info "Docker Compose file uploaded"
+
+# Start Gitea
+ssh -o StrictHostKeyChecking=no "root@$SERVER_IP" "
+    export GITEA_URL='$GITEA_URL'
+    export GITEA_DOMAIN='$SERVER_IP'
+    cd ~ && docker compose up -d 2>&1 | tail -3
+" 2>/dev/null
+info "Gitea container started"
+
+# Wait for Gitea to be ready
+echo "  Waiting for Gitea to start..."
+for i in $(seq 1 60); do
+    if curl -sf "$GITEA_URL/api/v1/version" &>/dev/null; then
+        break
+    fi
+    sleep 2
+done
+
+if ! curl -sf "$GITEA_URL/api/v1/version" &>/dev/null; then
+    fail "Gitea didn't start within 120 seconds. Check: ssh root@$SERVER_IP 'docker logs gitea'"
+fi
+info "Gitea is running at $GITEA_URL"
+
+# --- Create admin user ---
+
+step "Creating admin user..."
+
+# Create admin via Gitea CLI inside the container
+ssh -o StrictHostKeyChecking=no "root@$SERVER_IP" "
+    docker exec gitea gitea admin user create \
+        --username '$ADMIN_USER' \
+        --password '$ADMIN_PASS' \
+        --email '$ADMIN_EMAIL' \
+        --admin \
+        --must-change-password=false \
+        2>&1
+" 2>/dev/null | grep -v "^$" || true
+info "Admin user created: $ADMIN_USER"
+
+# Get API token
+ADMIN_TOKEN=$(curl -sf -X POST "$GITEA_URL/api/v1/users/$ADMIN_USER/tokens" \
+    -u "$ADMIN_USER:$ADMIN_PASS" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"bootstrap","scopes":["all"]}' | python3 -c "import sys,json; print(json.load(sys.stdin)['sha1'])")
+
+if [ -z "$ADMIN_TOKEN" ]; then
+    fail "Could not create admin API token."
+fi
+info "Admin API token generated"
+
+# --- Create organization ---
+
+step "Creating hackathon organization..."
+
+curl -sf -X POST "$GITEA_URL/api/v1/orgs" \
+    -H "Authorization: token $ADMIN_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"$GITEA_ORG\",\"visibility\":\"private\",\"description\":\"Bubble Hackathon 2026\"}" \
+    >/dev/null 2>&1 || true
+
+info "Organization '$GITEA_ORG' created"
 
 # --- Create template repo ---
 
@@ -68,7 +144,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 cd "$TMPDIR"
 
-# Scaffold Next.js project (pipe yes to auto-accept any unexpected prompts)
+# Scaffold Next.js project
 echo "  Scaffolding Next.js project (this takes a moment)..."
 yes "" | npx --yes create-next-app@latest hackathon-template \
     --typescript \
@@ -89,15 +165,11 @@ cd hackathon-template
 cp "$REPO_ROOT/template-overlay/CLAUDE.md" .
 cp -r "$REPO_ROOT/template-overlay/context" .
 cp -r "$REPO_ROOT/template-overlay/.githooks" .
-
-# Add .gitkeep for screenshots directory
 mkdir -p context/screenshots
 touch context/screenshots/.gitkeep
-
-# Append extra .gitignore entries (secrets, credentials, IDE, OS)
 cat "$REPO_ROOT/template-overlay/.gitignore-extra" >> .gitignore
 
-# Create .env.example to show the safe pattern for secrets
+# Create .env.example
 cat > .env.example << 'ENVEOF'
 # Copy this file to .env.local and fill in your values.
 # .env.local is gitignored — your secrets stay on your machine.
@@ -107,7 +179,7 @@ cat > .env.example << 'ENVEOF'
 # NEXT_PUBLIC_MAP_KEY=pk-...
 ENVEOF
 
-# Add "prepare" script to package.json so git hooks auto-install on npm install
+# Add prepare script for git hooks
 node -e "
 const pkg = require('./package.json');
 pkg.scripts = pkg.scripts || {};
@@ -115,98 +187,81 @@ pkg.scripts.prepare = 'git config core.hooksPath .githooks 2>/dev/null || true';
 require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
 "
 
-info "Next.js + Tailwind + hackathon overlay assembled"
+info "Template assembled"
 
-# Initialize git and push
+# Create the repo on Gitea
+curl -sf -X POST "$GITEA_URL/api/v1/orgs/$GITEA_ORG/repos" \
+    -H "Authorization: token $ADMIN_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{\"name\":\"$GITEA_TEMPLATE_REPO\",\"private\":true,\"description\":\"Hackathon starter template\",\"template\":true,\"default_branch\":\"main\"}" \
+    >/dev/null 2>&1 || true
+
+# Push template files
 git init -b main
 git add -A
 git commit -m "Initial hackathon template" --quiet
+git remote add origin "$GITEA_URL/$GITEA_ORG/$GITEA_TEMPLATE_REPO.git"
 
-# Create the repo on GitHub (or update if exists)
-if gh repo view "$HACKATHON_ORG/$HACKATHON_TEMPLATE_REPO" &>/dev/null 2>&1; then
-    info "Template repo already exists — updating..."
-    git remote add origin "https://github.com/$HACKATHON_ORG/$HACKATHON_TEMPLATE_REPO.git"
-    git push --force origin main 2>/dev/null
-else
-    gh repo create "$HACKATHON_ORG/$HACKATHON_TEMPLATE_REPO" \
-        --private \
-        --source . \
-        --push \
-        --description "Hackathon starter template — do not edit directly" \
-        2>/dev/null
-fi
+# Use admin credentials for push
+git -c "http.extraHeader=Authorization: token $ADMIN_TOKEN" push -u origin main --force 2>/dev/null
 
-# Mark as template repo
-gh api -X PATCH "repos/$HACKATHON_ORG/$HACKATHON_TEMPLATE_REPO" \
-    -F is_template=true \
-    --silent 2>/dev/null || true
+info "Template repo ready at $GITEA_URL/$GITEA_ORG/$GITEA_TEMPLATE_REPO"
 
-info "Template repo ready: $HACKATHON_ORG/$HACKATHON_TEMPLATE_REPO"
+# --- Update config.sh with server details ---
 
-# Restrict _template to admin-only writes (others inherit org read via default_repository_permission)
-# On GitHub Free we can't use branch protection, but we can remove the default team permission
-# and rely on the creator (admin) having push access.
-# The org default gives write, so we override at the repo level by removing the "all members" permission.
-# This isn't possible on GitHub Free without Teams — noted as a known limitation.
-
-# --- Push this admin repo to the setup repo on GitHub ---
-
-step "Creating setup repo (pushing admin tooling to GitHub)..."
+step "Saving configuration..."
 
 cd "$REPO_ROOT"
 
-# Ensure .gitkeep exists for screenshots
-mkdir -p template-overlay/context/screenshots
-touch template-overlay/context/screenshots/.gitkeep
+cat > config.sh << CFGEOF
+#!/usr/bin/env bash
+# Shared configuration for hackathon tooling.
+# Generated by admin/bootstrap.sh — re-run bootstrap to update.
 
-# Initialize git if not already a repo
-if [ ! -d .git ]; then
-    git init -b main
-    git add -A
-    git commit -m "Hackathon admin tooling and setup script" --quiet
-fi
+# GitHub (hosts the setup script only)
+GITHUB_ORG="$GITHUB_ORG"
+GITHUB_SETUP_REPO="$GITHUB_SETUP_REPO"
 
-# Create or update the remote repo
-if gh repo view "$HACKATHON_ORG/$HACKATHON_SETUP_REPO" &>/dev/null 2>&1; then
-    info "Setup repo already exists — updating..."
+# Gitea server
+GITEA_URL="$GITEA_URL"
+GITEA_SSH="ssh://git@$GITEA_SSH_HOST:$GITEA_SSH_PORT"
+GITEA_ADMIN_TOKEN="$ADMIN_TOKEN"
+GITEA_ORG="$GITEA_ORG"
+GITEA_TEMPLATE_REPO="$GITEA_TEMPLATE_REPO"
 
-    # Ensure remote is set
-    if ! git remote get-url origin &>/dev/null 2>&1; then
-        git remote add origin "https://github.com/$HACKATHON_ORG/$HACKATHON_SETUP_REPO.git"
-    fi
+# Local
+HACKATHON_DIR="\$HOME/hackathon"
+CFGEOF
 
-    # Commit any uncommitted changes
-    git add -A
-    git diff --cached --quiet || git commit -m "Update hackathon tooling" --quiet
+info "config.sh updated with server details"
 
-    git push --force origin main 2>/dev/null
-else
-    # Stage everything and commit if needed
-    git add -A
-    git diff --cached --quiet || git commit -m "Hackathon admin tooling and setup script" --quiet
+# --- Push setup script to GitHub ---
 
-    gh repo create "$HACKATHON_ORG/$HACKATHON_SETUP_REPO" \
-        --public \
-        --source . \
-        --push \
-        --description "Hackathon setup — run the script to get started" \
-        2>/dev/null
-fi
+step "Pushing updated setup script to GitHub..."
 
-info "Setup repo ready: $HACKATHON_ORG/$HACKATHON_SETUP_REPO (public)"
-info "This directory is now a clone of the setup repo"
+git add -A
+git diff --cached --quiet || git commit -m "Update config with Gitea server at $SERVER_IP" --quiet
+git push origin main 2>/dev/null || warn "Could not push to GitHub (non-critical)"
+
+info "Setup script updated on GitHub"
 
 # --- Done ---
 
 echo ""
-echo -e "${GREEN}${BOLD}Bootstrap complete!${NC}"
+echo -e "${GREEN}${BOLD}========================================${NC}"
+echo -e "${GREEN}${BOLD}   Bootstrap complete!${NC}"
+echo -e "${GREEN}${BOLD}========================================${NC}"
 echo ""
-echo "  Template repo: https://github.com/$HACKATHON_ORG/$HACKATHON_TEMPLATE_REPO"
-echo "  Setup repo:    https://github.com/$HACKATHON_ORG/$HACKATHON_SETUP_REPO"
+echo "  Gitea:     $GITEA_URL"
+echo "  Admin:     $ADMIN_USER / $ADMIN_PASS"
+echo "  API token: $ADMIN_TOKEN"
 echo ""
-echo "  Next steps:"
-echo "    1. Invite users:  bash admin/invite-users.sh user1 user2 ..."
-echo "    2. Share the setup command with participants:"
+echo -e "  ${YELLOW}Save these credentials somewhere safe — they won't be shown again.${NC}"
 echo ""
-echo -e "       ${BLUE}bash <(curl -fsSL https://raw.githubusercontent.com/$HACKATHON_ORG/$HACKATHON_SETUP_REPO/main/setup.sh)${NC}"
+echo "  Share this command with participants:"
+echo ""
+echo -e "  ${BLUE}bash <(curl -fsSL https://raw.githubusercontent.com/$GITHUB_ORG/$GITHUB_SETUP_REPO/main/setup.sh)${NC}"
+echo ""
+echo "  Or if they don't want to curl, they can clone and run:"
+echo -e "  ${BLUE}git clone https://github.com/$GITHUB_ORG/$GITHUB_SETUP_REPO.git && bash $GITHUB_SETUP_REPO/setup.sh${NC}"
 echo ""

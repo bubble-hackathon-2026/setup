@@ -8,25 +8,23 @@ Open your terminal and run:
 bash <(curl -fsSL https://raw.githubusercontent.com/bubble-hackathon-2026/setup/main/setup.sh)
 ```
 
-This walks you through creating or joining a hackathon team.
+That's it. The script will:
+
+1. Check your tools (Git, Node.js)
+2. Ask for your name and @bubble.io email (no accounts to create!)
+3. Let you create a new team or join an existing one
+4. Clone your team's project and install dependencies
+
+Then `cd` into your project and run `claude` to start building.
 
 ### Prerequisites
 
 Install these before running the setup script (one time):
 
 1. **Node.js** — Download from [nodejs.org](https://nodejs.org/) (LTS version)
-2. **GitHub CLI** — Run `brew install gh` in your terminal
-3. **Claude Code** — Run `npm install -g @anthropic-ai/claude-code` in your terminal
+2. **Claude Code** — Run `npm install -g @anthropic-ai/claude-code` in your terminal
 
-### What the Setup Does
-
-1. Checks your tools are installed
-2. Logs you into GitHub (opens a browser window)
-3. Lets you create a new team or join an existing one
-4. Clones your team's project to `~/hackathon/<team-name>/`
-5. Installs dependencies
-
-After setup, `cd` into your project and run `claude` to start building!
+That's all. No GitHub account needed.
 
 ### Talking to Claude
 
@@ -44,62 +42,56 @@ Once you're in Claude Code, just talk naturally:
 
 ### Architecture
 
-- **GitHub org** (`bubble-hackathon-2026`): Free org, separate from Bubble production. One private repo per team, created from a template.
-- **Template repo** (`_template`): Next.js + Tailwind starter with CLAUDE.md that makes Claude Code handle git, deployment, and collaboration invisibly.
-- **This repo** (`setup`): Public. Hosts the setup script and all admin tooling.
+- **Gitea server**: Self-hosted on a small VM ($12/month). Private git repos, per-team access control, auto-provisioned accounts via @bubble.io email. No GitHub accounts needed.
+- **GitHub** (`bubble-hackathon-2026/setup`): Public repo that hosts only the setup script. Users curl from here. No login needed.
+- **Template repo** (`_template` on Gitea): Next.js + Tailwind starter with CLAUDE.md and Bubble design context.
 - **Hosting**: Vercel free tier. Teams deploy via `npx vercel` (Claude handles it).
 
 ### Initial Setup
 
-1. Create the GitHub org at github.com/organizations/plan (free plan, named `bubble-hackathon-2026`)
-2. Ensure gh CLI has admin scope: `gh auth refresh -h github.com -s admin:org`
-3. Clone this repo and run: `bash admin/bootstrap.sh`
+1. **Create a VM** with Docker installed.
+   - DigitalOcean: Create a droplet using the "Docker" marketplace image ($12/month, 1GB RAM).
+   - Open ports 3000 (HTTP) and 2222 (git SSH) in the firewall.
+   - Make sure you can `ssh root@<IP>`.
 
-### Invite Participants
+2. **Run bootstrap:**
+   ```bash
+   bash admin/bootstrap.sh <SERVER_IP>
+   ```
+   This deploys Gitea, creates the template repo, and pushes the setup script to GitHub.
+   Save the admin credentials it prints — you'll need them for teardown.
 
-```bash
-# By GitHub username
-bash admin/invite-users.sh octocat janedoe bobsmith
+3. **Share the setup command** in Slack:
+   ```
+   bash <(curl -fsSL https://raw.githubusercontent.com/bubble-hackathon-2026/setup/main/setup.sh)
+   ```
+   No invites needed — anyone with a @bubble.io email can self-provision.
 
-# From a file (one username or email per line)
-bash admin/invite-users.sh --from-file participants.txt
-```
+### Security
 
-Users without GitHub accounts need to create one at github.com first.
+- **Accounts**: Auto-created, restricted to @bubble.io emails. No self-registration.
+- **Repos**: Private. Per-team access control (teams can only write to their own repo).
+- **Secrets**: Pre-commit hook blocks commits containing API keys/tokens. CLAUDE.md instructs Claude to use `.env.local` for secrets.
+- **Vercel**: Deployed prototypes are public by URL (security by obscurity). Secrets go in via `vercel env add`.
+- **Server**: Temporary — destroyed after the hackathon. No persistent data.
 
 ### Update Bubble Design Context
 
-Add screenshots and design tokens to `template-overlay/context/`:
-- `context/bubble-overview.md` — Design tokens, colors, fonts, patterns
-- `context/screenshots/` — Bubble UI screenshots
+Edit files in `template-overlay/context/`, then re-run `bash admin/bootstrap.sh <IP>` to update the template. Only affects newly created teams.
 
-Then re-run `bash admin/bootstrap.sh` to update the template. Only affects newly created teams.
-
-### Teardown (post-hackathon)
+### Teardown
 
 ```bash
 bash admin/teardown.sh
 ```
 
-Archives repos locally (optional), then deletes them. Delete the org via GitHub settings. Total: ~5 minutes.
+Archives repos (optional), destroys the Gitea server. Then delete the VM from your cloud dashboard. Total: ~5 minutes.
 
 ### Cost
 
-$0. GitHub Free org + Vercel free tier. Nothing to cancel.
-
-### File Structure
-
-```
-├── setup.sh                  # User-facing setup script (curl target)
-├── config.sh                 # Shared config (org name, etc.)
-├── admin/
-│   ├── bootstrap.sh          # Create org repos + config
-│   ├── invite-users.sh       # Invite users to org
-│   └── teardown.sh           # Post-hackathon cleanup
-└── template-overlay/
-    ├── CLAUDE.md              # Claude Code instructions (the key file)
-    └── context/
-        ├── README.md          # Guide for contributors
-        ├── bubble-overview.md # Product context + design tokens
-        └── screenshots/       # Bubble UI screenshots
-```
+| Item | Cost |
+|------|------|
+| VM (DigitalOcean 1GB) | ~$12/month |
+| Vercel free tier | $0 |
+| Claude Code | Existing licenses |
+| **Total** | **~$12** |

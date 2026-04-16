@@ -45,6 +45,14 @@ When the user says "deploy", "share this", "get me a link", or "I want to show s
 5. After deploy completes, share the URL with the user. It will look like `https://something.vercel.app`
 6. Tell them: "Anyone with this link can see your prototype!"
 
+### Environment Variables on Vercel
+
+If the app needs API keys in production (not just locally), add them to Vercel:
+```bash
+npx vercel env add SECRET_NAME production
+```
+This prompts for the value interactively (secure, not shown in terminal history). After adding env vars, redeploy: `npx vercel --prod --yes`
+
 If Vercel deploy has issues, fall back to: `npx serve out/` after `npm run build` — this serves locally, and the user can demo via screen share or Loom recording.
 
 ## Secrets & API Keys
