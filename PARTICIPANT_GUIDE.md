@@ -51,40 +51,30 @@ Type `1` to start a new team, or `2` to join a teammate.
 - **New team:** Pick a team name (e.g., `workflow-wizards`). Tell your teammates this name so they can join.
 - **Joining:** Enter the team name your teammate created.
 
-When it finishes, you'll see a green **"You're all set!"** message with your project location.
+When it finishes, you'll see a green **"You're all set!"** banner followed by a numbered list of **"Next steps"**. Each step shows you an exact command to copy and paste into the same Terminal window.
 
 ---
 
-## Step 3: Install Claude Code
+## Step 3: Follow the Numbered Commands from Setup
 
-Claude Code is the AI that will help you build your project. Install it by pasting this command in Terminal:
+The setup script prints a list that looks like this (numbers may vary):
 
-```
-npm install -g @anthropic-ai/claude-code
-```
+> **1.** Install Claude Code:
+> `npm install -g @anthropic-ai/claude-code`
+>
+> **2.** Go to your project folder:
+> `cd /Users/you/hackathon/workflow-wizards`
+>
+> **3.** Start Claude Code:
+> `claude`
 
-Press **Enter** and wait ~30 seconds for it to install.
+**For each numbered step**, click on the command, copy it (⌘+C), paste it into Terminal (⌘+V), and press **Enter**. Wait for each one to finish before moving to the next.
 
----
-
-## Step 4: Open Your Project
-
-Look at the end of the "You're all set!" message from Step 2 — it shows your project path (something like `/Users/you/hackathon/workflow-wizards`).
-
-In Terminal, type these two commands (replace `YOUR-TEAM-NAME` with your actual team name):
-
-```
-cd ~/hackathon/YOUR-TEAM-NAME
-claude
-```
-
-Press **Enter** after each line.
-
-Claude Code will open. You're ready to build!
+When Claude Code starts, you'll see a friendly prompt asking what you'd like to do.
 
 ---
 
-## Step 5: Talk to Claude
+## Step 4: Talk to Claude
 
 Just type what you want in plain English. Some things to try:
 
@@ -95,6 +85,10 @@ Just type what you want in plain English. Some things to try:
 - **"Get my teammate's latest changes"** — pulls in what they've been doing
 
 Claude will ask questions when it needs clarification, and will show you your app as you build it so you can give visual feedback.
+
+### Starting Over or Joining a Different Team
+
+You can run the setup command (Step 2) again anytime — each run creates or joins another team, kept in its own folder at `~/hackathon/<team-name>/`. Useful if you want to start fresh with a different idea, or if you joined the wrong team by accident.
 
 ---
 

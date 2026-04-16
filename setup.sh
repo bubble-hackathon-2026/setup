@@ -207,12 +207,17 @@ if [ "$choice" = "1" ]; then
 
     if [ "$choice" = "1" ]; then
         mkdir -p "$HACKATHON_DIR"
-        [ -d "$HACKATHON_DIR/$team_slug" ] && rm -rf "$HACKATHON_DIR/$team_slug"
-        git clone "$GITEA_URL/$GITEA_ORG/$team_slug.git" "$HACKATHON_DIR/$team_slug" 2>/dev/null
+        if [ -d "$HACKATHON_DIR/$team_slug" ]; then
+            rm -rf "$HACKATHON_DIR/$team_slug"
+        fi
+        if ! git clone "$GITEA_URL/$GITEA_ORG/$team_slug.git" "$HACKATHON_DIR/$team_slug" 2>&1; then
+            fail "Could not clone the new repo. Contact a hackathon organizer."
+            exit 1
+        fi
 
         cd "$HACKATHON_DIR/$team_slug"
         echo "  Installing dependencies (takes a moment)..."
-        npm install --silent 2>/dev/null
+        npm install --silent 2>/dev/null || warn "npm install had warnings (usually fine)"
         info "Ready"
     fi
 fi
@@ -260,10 +265,13 @@ for t in json.load(sys.stdin).get('teams', []):
         cd "$HACKATHON_DIR/$team_slug"
         git pull --rebase origin main 2>/dev/null || true
     else
-        git clone "$GITEA_URL/$GITEA_ORG/$team_slug.git" "$HACKATHON_DIR/$team_slug" 2>/dev/null
+        if ! git clone "$GITEA_URL/$GITEA_ORG/$team_slug.git" "$HACKATHON_DIR/$team_slug" 2>&1; then
+            fail "Could not clone the repo. Contact a hackathon organizer."
+            exit 1
+        fi
         cd "$HACKATHON_DIR/$team_slug"
         echo "  Installing dependencies (takes a moment)..."
-        npm install --silent 2>/dev/null
+        npm install --silent 2>/dev/null || warn "npm install had warnings (usually fine)"
     fi
 
     info "Ready"
@@ -276,20 +284,42 @@ echo -e "${GREEN}${BOLD}========================================${NC}"
 echo -e "${GREEN}${BOLD}   You're all set!${NC}"
 echo -e "${GREEN}${BOLD}========================================${NC}"
 echo ""
-echo -e "  Project: ${BOLD}$HACKATHON_DIR/$team_slug${NC}"
+echo -e "  ${BOLD}Team:${NC}    $team_slug"
+echo -e "  ${BOLD}Project:${NC} $HACKATHON_DIR/$team_slug"
 echo ""
-echo -e "  ${BOLD}To start building:${NC}"
-echo -e "    cd $HACKATHON_DIR/$team_slug"
-if command -v claude &>/dev/null; then
-    echo -e "    claude"
-else
-    echo -e "    npm install -g @anthropic-ai/claude-code"
-    echo -e "    claude"
+echo -e "${BOLD}Next steps — copy and paste each command into this Terminal window:${NC}"
+echo ""
+
+step_num=1
+
+if ! command -v claude &>/dev/null; then
+    echo -e "  ${BOLD}$step_num.${NC} Install Claude Code (takes ~30 seconds):"
+    echo ""
+    echo -e "     ${BLUE}npm install -g @anthropic-ai/claude-code${NC}"
+    echo ""
+    step_num=$((step_num + 1))
 fi
+
+echo -e "  ${BOLD}$step_num.${NC} Go to your project folder:"
 echo ""
-echo -e "  ${BOLD}Things you can say to Claude:${NC}"
-echo -e "    \"I want to build ...\"         — start building"
-echo -e "    \"deploy this\"                  — get a shareable link"
-echo -e "    \"save my work\"                 — commit & push"
-echo -e "    \"get my teammate's changes\"    — pull latest"
+echo -e "     ${BLUE}cd $HACKATHON_DIR/$team_slug${NC}"
+echo ""
+step_num=$((step_num + 1))
+
+echo -e "  ${BOLD}$step_num.${NC} Start Claude Code:"
+echo ""
+echo -e "     ${BLUE}claude${NC}"
+echo ""
+step_num=$((step_num + 1))
+
+echo -e "  ${BOLD}$step_num.${NC} Tell Claude what you want to build! Try something like:"
+echo ""
+echo -e "     ${BLUE}I want to build a dashboard for tracking onboarding — make it look like Bubble${NC}"
+echo ""
+echo -e "     Other useful things to say to Claude:"
+echo -e "       \"deploy this\"                   - get a shareable link"
+echo -e "       \"save my work\"                  - commit & push"
+echo -e "       \"get my teammate's changes\"     - pull the latest from teammates"
+echo ""
+echo -e "  ${YELLOW}Stuck? Ask a hackathon organizer or post in #hackathon on Slack.${NC}"
 echo ""
