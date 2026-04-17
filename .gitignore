@@ -1,1 +1,6 @@
 .admin-credentials
+
+# Local CLAUDE.md — Josh's personal workflow notes for this admin repo.
+# Gitignored because this repo is public and the sync/operational details
+# are for his clone only. Don't remove.
+CLAUDE.md
