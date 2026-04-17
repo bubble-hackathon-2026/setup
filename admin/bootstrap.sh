@@ -253,7 +253,6 @@ cd hackathon-template
 cp "$REPO_ROOT/template-overlay/CLAUDE.md" .
 cp -r "$REPO_ROOT/template-overlay/context" .
 cp -r "$REPO_ROOT/template-overlay/.githooks" .
-mkdir -p context/screenshots && touch context/screenshots/.gitkeep
 cat "$REPO_ROOT/template-overlay/.gitignore-extra" >> .gitignore
 
 cat > .env.example << 'ENVEOF'

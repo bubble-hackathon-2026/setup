@@ -14,7 +14,7 @@ You are helping a hackathon team build a prototype. The user may be non-technica
 If the project only has starter files (no pages beyond the default), greet the user briefly and ask:
 
 1. What are you building? (one sentence is fine)
-2. Should it look like Bubble's product, or is a clean custom UI fine?
+2. Is the goal for the prototype to look like it lives *inside* the Bubble editor (e.g., pitching a new editor feature or redesigning an existing editor surface), or is a clean custom UI fine for the demo?
 
 Then start building immediately. Don't ask more questions.
 
@@ -25,14 +25,32 @@ Then start building immediately. Don't ask more questions.
 - Build: `npm run build`
 - Install packages: `npm install <package>`
 
-## Making It Look Like Bubble
+## Is This A Bubble-Editor Prototype?
 
-If the user wants their prototype to look like Bubble, read the files in `context/` for:
-- Screenshots of the Bubble editor UI (`context/screenshots/`)
-- Design tokens: colors, fonts, spacing (`context/bubble-overview.md`)
-- Terminology and product concepts
+Hackathon projects split into two types, and the distinction matters a lot for how you build:
 
-Use the Phosphor icon library (`npm install @phosphor-icons/react`) — Bubble's product uses Phosphor icons.
+- **Bubble-editor prototypes** — mocking up a new editor feature (e.g., "add a Disable Step toggle to workflow steps", "redesign the Data tab privacy rules"), a redesign of an existing editor surface, or anything where the demo is meant to feel like *"this could actually ship in the Bubble editor tomorrow."* For these, the prototype has to match Bubble's visual language precisely.
+- **Everything else** — user-facing apps (marketplaces, internal tools, AI tools, dashboards), Bubble plugins with their own UI, marketing pages, new product concepts not tied to the editor's look. For these, a clean custom UI is fine — *do not* force Bubble editor styling.
+
+If the user was explicit in the first conversation, trust what they said. If you're unsure — or if they said "make it look like Bubble" without distinguishing the editor vs. a generic Bubble-built app — ask one short follow-up: *"Quick check: is this meant to look like it's inside the Bubble editor (cobalt + purple chips + dense panels), or is it a Bubble-style end-user app?"* The user may not know the editor kit exists, so ask once rather than guess.
+
+### If yes — use the editor kit
+
+Read **`context/bubble-editor-kit/INDEX.md`** before writing any UI code. The kit has the authoritative design language (tokens, components, icons, typography), deep dives on each editor surface (Design tab, Workflow editor, Data tab, etc.), and annotated screenshots. Following the kit is the difference between "almost looks like Bubble" and "looks like Bubble."
+
+Key non-negotiables from the kit (full list in the INDEX):
+- Open Sans 12px/16px (not Inter, not 14px), Phosphor icons (`@phosphor-icons/react`), cobalt-70 `#0C29AB` primary, purple `#79059A` for dynamic data, 4px radii dominant, no gradients, no dark mode.
+- Use correct Bubble vocabulary: **Data Type** (not table), **Thing** (not record), **Workflow** (not automation), **Element** (not component), **Custom Event** (not helper).
+- Before calling the prototype done, re-open 1-2 screenshots from the target surface and fix the top 3-5 visual gaps.
+
+### If no — skip the kit entirely
+
+Don't read anything in `context/bubble-editor-kit/`. Don't import the Bubble design tokens. Build whatever UI best fits the product idea. The kit will just make a non-editor prototype feel wrong.
+
+### General UI tips (both types)
+
+- **If the user pastes a screenshot**, use it as a direct visual reference — match it literally before iterating.
+- Phosphor icons work well for both types: `npm install @phosphor-icons/react`.
 
 ## Deploying (Getting a Shareable Link)
 
