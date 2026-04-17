@@ -183,6 +183,8 @@ slugify() {
 
 # Write Claude Code project-local settings so the auto-mode classifier doesn't
 # interrupt routine hackathon actions (push to main, npm install, npx vercel).
+# defaultMode=acceptEdits auto-accepts file edits so non-technical users
+# aren't prompted to review generated code.
 # Written to settings.local.json (per-user, gitignored) so it's trusted
 # by Claude Code's anti-prompt-injection rules.
 write_claude_settings() {
@@ -204,6 +206,7 @@ write_claude_settings() {
     ]
   },
   "permissions": {
+    "defaultMode": "acceptEdits",
     "allow": [
       "Bash(git push:*)",
       "Bash(git pull:*)",
