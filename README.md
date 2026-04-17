@@ -14,6 +14,8 @@ Paste it into your terminal. It will:
 3. Let you create a new team or join an existing one
 4. Set up your project
 
+**On Windows?** See [WINDOWS_SETUP.md](./WINDOWS_SETUP.md) for the PowerShell equivalent.
+
 Then `cd ~/hackathon/<team-name>` and run `claude` to start building.
 
 **Only prerequisite:** Install Claude Code first: `npm install -g @anthropic-ai/claude-code`

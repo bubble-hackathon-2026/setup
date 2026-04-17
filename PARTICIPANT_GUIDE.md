@@ -4,6 +4,8 @@ Welcome! This walks you through getting set up on your Mac. No coding experience
 
 You'll need: your MacBook, the internet, and your Mac login password (you'll be asked for it once).
 
+> **On a Windows PC?** Use [WINDOWS_SETUP.md](./WINDOWS_SETUP.md) instead — it has Windows-specific instructions.
+
 ---
 
 ## Step 1: Open Terminal
