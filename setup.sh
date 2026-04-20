@@ -99,7 +99,7 @@ if command -v claude &>/dev/null; then
     info "Claude Code"
 else
     warn "Claude Code not found — install after setup:"
-    echo -e "       ${BLUE}npm install -g @anthropic-ai/claude-code${NC}"
+    echo -e "       ${BLUE}curl -fsSL https://claude.ai/install.sh | bash${NC}"
 fi
 
 # --- Check server ---
@@ -364,7 +364,7 @@ step_num=1
 if ! command -v claude &>/dev/null; then
     echo -e "  ${BOLD}$step_num.${NC} Install Claude Code (takes ~30 seconds):"
     echo ""
-    echo -e "     ${BLUE}npm install -g @anthropic-ai/claude-code${NC}"
+    echo -e "     ${BLUE}curl -fsSL https://claude.ai/install.sh | bash${NC}"
     echo ""
     step_num=$((step_num + 1))
 fi

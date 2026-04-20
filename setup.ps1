@@ -113,7 +113,7 @@ if (Test-Cmd claude) {
     Write-InfoMsg "Claude Code"
 } else {
     Write-WarnMsg "Claude Code not found — install after setup:"
-    Write-Host "       npm install -g @anthropic-ai/claude-code" -ForegroundColor Blue
+    Write-Host "       irm https://claude.ai/install.ps1 | iex" -ForegroundColor Blue
 }
 
 # --- Check server reachability ---
@@ -410,7 +410,7 @@ $stepNum = 1
 if (-not (Test-Cmd claude)) {
     Write-Host "  $stepNum. Install Claude Code (takes ~30 seconds):"
     Write-Host ""
-    Write-Host "     npm install -g @anthropic-ai/claude-code" -ForegroundColor Blue
+    Write-Host "     irm https://claude.ai/install.ps1 | iex" -ForegroundColor Blue
     Write-Host ""
     $stepNum++
 }

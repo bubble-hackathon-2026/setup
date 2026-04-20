@@ -18,8 +18,12 @@ Paste it into your terminal. It will:
 
 Then `cd ~/hackathon/<team-name>` and run `claude` to start building.
 
-**Only prerequisite:** Install Claude Code first: `npm install -g @anthropic-ai/claude-code`
-(If you don't have npm yet, run the setup command first — it installs Node.js for you — then install Claude Code.)
+**Only prerequisite:** Install Claude Code first:
+
+- macOS: `curl -fsSL https://claude.ai/install.sh | bash`
+- Windows (PowerShell): `irm https://claude.ai/install.ps1 | iex`
+
+See the [Claude Code quickstart](https://code.claude.com/docs/en/quickstart) for other install methods.
 
 ### Talking to Claude
 

@@ -62,7 +62,7 @@ When it finishes, you'll see a green **"You're all set!"** banner followed by a 
 The setup script prints a list that looks like this (numbers may vary):
 
 > **1.** Install Claude Code:
-> `npm install -g @anthropic-ai/claude-code`
+> `curl -fsSL https://claude.ai/install.sh | bash`
 >
 > **2.** Go to your project folder:
 > `cd /Users/you/hackathon/workflow-wizards`
