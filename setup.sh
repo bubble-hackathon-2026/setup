@@ -129,20 +129,43 @@ PROVISIONER="http://$SERVER_IP:8080"
 
 step "Checking prerequisites..."
 
-# Git — comes with Xcode CLT on macOS
-if command -v git &>/dev/null; then
+# Git — comes with Xcode CLT on macOS.
+# IMPORTANT: /usr/bin/git is a shim that exists even when Command Line Tools
+# aren't installed — it just prompts the install dialog on first use. So
+# `command -v git` isn't enough; we also check that CLT is actually active.
+# (A Homebrew/non-Apple git at a different path is trusted as-is.)
+git_is_real() {
+    local git_path
+    git_path=$(command -v git 2>/dev/null) || return 1
+    [ "$git_path" != "/usr/bin/git" ] && return 0
+    xcode-select -p &>/dev/null
+}
+
+if git_is_real; then
     info "Git"
 else
-    warn "Git not found — installing Xcode Command Line Tools..."
-    echo "  A dialog may appear. Click 'Install' and wait for it to finish."
+    warn "Git not available — installing Xcode Command Line Tools..."
+    echo "  A dialog will appear. Click 'Install' and agree to the terms."
+    echo "  This takes several minutes; leave the dialog running."
     xcode-select --install 2>/dev/null || true
     echo ""
-    echo -e "  Press Enter once the installation is complete..."
-    read -r
-    if command -v git &>/dev/null; then
-        info "Git installed"
-    else
-        fail "Git still not found. Restart your terminal and re-run this script."
+    printf "  Waiting for install to complete"
+    # Poll up to ~20 minutes (120 * 10s). CLT installs can be slow on
+    # fresh machines or slow connections.
+    for _ in $(seq 1 120); do
+        if git_is_real; then
+            echo ""
+            info "Git installed"
+            break
+        fi
+        printf "."
+        sleep 10
+    done
+    if ! git_is_real; then
+        echo ""
+        fail "Command Line Tools install didn't complete in time."
+        echo "  If you cancelled the dialog, re-run this script."
+        echo "  If it's still installing, wait for it to finish, then re-run."
         exit 1
     fi
 fi
