@@ -86,17 +86,17 @@ fail_diag() {
 }
 
 # Try to extract .error from a JSON blob. Empty string if not JSON or no .error.
+# Uses node (auto-installed above) rather than python3, which isn't guaranteed
+# on macOS when the user already had git installed from a source other than
+# Xcode CLI tools (e.g., Homebrew) — /usr/bin/python3 is a shim that only
+# works if CLI tools are present.
 extract_error() {
-    echo "$1" | python3 -c "import sys,json
-try: print(json.load(sys.stdin).get('error',''))
-except Exception: pass" 2>/dev/null || true
+    node -e 'try{const o=JSON.parse(process.argv[1]);process.stdout.write((o.error||"")+"\n")}catch{}' -- "$1" 2>/dev/null || true
 }
 
 # Try to extract a named string field. Empty string if not JSON or missing.
 extract_field() {
-    echo "$1" | python3 -c "import sys,json
-try: print(json.load(sys.stdin).get('$2',''))
-except Exception: pass" 2>/dev/null || true
+    node -e 'try{const o=JSON.parse(process.argv[1]);process.stdout.write((o[process.argv[2]]||"")+"\n")}catch{}' -- "$1" "$2" 2>/dev/null || true
 }
 
 # If stdin is piped (curl | bash), reopen terminal for interactive input
@@ -325,7 +325,7 @@ if [ "$choice" = "1" ]; then
             -H "Content-Type: application/json" \
             -d "{\"team\": \"$team_slug\", \"username\": \"$username\"}" 2>/dev/null || echo '{}')
 
-        err=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))" 2>/dev/null || echo "")
+        err=$(extract_error "$result")
         if [ "$err" = "team already exists" ]; then
             warn "Team '$team_slug' already exists."
             read -r -p "  Join it instead? (y/n): " yn
@@ -367,11 +367,7 @@ if [ "$choice" = "2" ]; then
     if [ -z "$team_slug" ]; then
         echo ""
         teams_json=$(curl -sf "$PROVISIONER/teams" 2>/dev/null || echo '{"teams":[]}')
-        teams=$(echo "$teams_json" | python3 -c "
-import sys, json
-for t in json.load(sys.stdin).get('teams', []):
-    print(t)
-" 2>/dev/null || echo "")
+        teams=$(node -e 'try{const o=JSON.parse(process.argv[1]);(o.teams||[]).forEach(t=>console.log(t))}catch{}' -- "$teams_json" 2>/dev/null || echo "")
 
         if [ -z "$teams" ]; then
             fail "No teams exist yet. Choose option 1 to start one."
