@@ -13,7 +13,8 @@ import os
 import secrets
 import threading
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import traceback
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
@@ -157,25 +158,38 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- Routes ---
 
+    def _safe(self, fn):
+        """Run a handler, converting any uncaught exception into a JSON 500.
+        Without this, an exception drops the connection and the client sees
+        an empty response body (which looks like a generic 'parse error')."""
+        try:
+            fn()
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                self.send_json(500, {"error": f"internal error: {type(e).__name__}: {e}"})
+            except Exception:
+                pass
+
     def do_GET(self):
         if self.path == "/health":
-            self.send_json(200, {"ok": True})
+            self._safe(lambda: self.send_json(200, {"ok": True}))
         elif self.path == "/teams":
-            self.get_teams()
+            self._safe(self.get_teams)
         else:
-            self.send_json(404, {"error": "not found"})
+            self._safe(lambda: self.send_json(404, {"error": "not found"}))
 
     def do_POST(self):
         if self.path == "/request-code":
-            self.request_code()
+            self._safe(self.request_code)
         elif self.path == "/provision":
-            self.provision()
+            self._safe(self.provision)
         elif self.path == "/create-team":
-            self.create_team()
+            self._safe(self.create_team)
         elif self.path == "/join-team":
-            self.join_team()
+            self._safe(self.join_team)
         else:
-            self.send_json(404, {"error": "not found"})
+            self._safe(lambda: self.send_json(404, {"error": "not found"}))
 
     # --- Handlers ---
 
@@ -350,4 +364,4 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     print(f"Provisioner listening on :{port}", flush=True)
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()

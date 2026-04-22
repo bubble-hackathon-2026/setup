@@ -29,6 +29,76 @@ warn()  { echo -e "  ${YELLOW}!${NC} $1"; }
 fail()  { echo -e "  ${RED}x${NC} $1"; }
 step()  { echo -e "\n${BOLD}$1${NC}"; }
 
+# --- HTTP helper ---
+# Populates globals RESP_STATUS, RESP_BODY, CURL_EXIT, CURL_STDERR.
+# Returns 0 iff curl exited cleanly (any HTTP status); non-zero iff transport failed.
+post_json() {
+    local endpoint="$1"
+    local payload="$2"
+    local body_file stderr_file
+    body_file=$(mktemp)
+    stderr_file=$(mktemp)
+
+    set +e
+    RESP_STATUS=$(curl -sS --connect-timeout 10 --max-time 60 \
+        --retry 2 --retry-delay 2 \
+        -X POST "$PROVISIONER$endpoint" \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        -o "$body_file" \
+        -w "%{http_code}" \
+        2>"$stderr_file")
+    CURL_EXIT=$?
+    set -e
+
+    RESP_BODY=$(cat "$body_file" 2>/dev/null || echo "")
+    CURL_STDERR=$(cat "$stderr_file" 2>/dev/null || echo "")
+    rm -f "$body_file" "$stderr_file"
+
+    [ "$CURL_EXIT" -eq 0 ]
+}
+
+# Print a diagnostic block the user can paste back to organizers.
+# Called when we get an unexpected, unparseable response from the provisioner.
+fail_diag() {
+    local endpoint="$1"
+    fail "Unable to validate. Please try again in a moment."
+    echo ""
+    echo "  See below for technical details (share with a hackathon organizer"
+    echo "  if this keeps happening):"
+    echo ""
+    echo "  ----- diagnostic info -----"
+    echo "  endpoint:    $endpoint"
+    echo "  http status: ${RESP_STATUS:-<none>}"
+    echo "  curl exit:   ${CURL_EXIT:-<none>}"
+    if [ -n "${CURL_STDERR:-}" ]; then
+        echo "  curl stderr:"
+        printf '%s\n' "$CURL_STDERR" | head -c 500 | sed 's/^/    /'
+        echo ""
+    fi
+    if [ -n "${RESP_BODY:-}" ]; then
+        echo "  response body:"
+        printf '%s\n' "$RESP_BODY" | head -c 500 | sed 's/^/    /'
+        echo ""
+    fi
+    echo "  ---------------------------"
+    exit 1
+}
+
+# Try to extract .error from a JSON blob. Empty string if not JSON or no .error.
+extract_error() {
+    echo "$1" | python3 -c "import sys,json
+try: print(json.load(sys.stdin).get('error',''))
+except Exception: pass" 2>/dev/null || true
+}
+
+# Try to extract a named string field. Empty string if not JSON or missing.
+extract_field() {
+    echo "$1" | python3 -c "import sys,json
+try: print(json.load(sys.stdin).get('$2',''))
+except Exception: pass" 2>/dev/null || true
+}
+
 # If stdin is piped (curl | bash), reopen terminal for interactive input
 if [ ! -t 0 ]; then
     exec < /dev/tty
@@ -124,14 +194,17 @@ read -r -p "  Your @bubble.io email: " user_email
 
 step "Verifying your email..."
 
-code_result=$(curl -s -X POST "$PROVISIONER/request-code" \
-    -H "Content-Type: application/json" \
-    -d "{\"email\": \"$user_email\"}" 2>/dev/null || echo '{"error":"cannot reach server"}')
+if ! post_json "/request-code" "{\"email\": \"$user_email\"}"; then
+    fail_diag "POST /request-code"
+fi
 
-code_error=$(echo "$code_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))" 2>/dev/null || echo "parse error")
-if [ -n "$code_error" ]; then
-    fail "$code_error"
-    exit 1
+if [ "$RESP_STATUS" != "200" ]; then
+    code_error=$(extract_error "$RESP_BODY")
+    if [ -n "$code_error" ]; then
+        fail "$code_error"
+        exit 1
+    fi
+    fail_diag "POST /request-code"
 fi
 
 info "Check Slack — we just sent you a DM with a 6-digit code"
@@ -142,23 +215,24 @@ read -r -p "  Enter the code: " verify_code
 
 step "Setting up your account..."
 
-provision_result=$(curl -s -X POST "$PROVISIONER/provision" \
-    -H "Content-Type: application/json" \
-    -d "{\"name\": \"$user_name\", \"email\": \"$user_email\", \"code\": \"$verify_code\"}" 2>/dev/null || echo '{"error":"cannot reach server"}')
-
-# Check for errors
-error=$(echo "$provision_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))" 2>/dev/null || echo "parse error")
-if [ -n "$error" ]; then
-    fail "$error"
-    exit 1
+if ! post_json "/provision" "{\"name\": \"$user_name\", \"email\": \"$user_email\", \"code\": \"$verify_code\"}"; then
+    fail_diag "POST /provision"
 fi
 
-username=$(echo "$provision_result" | python3 -c "import sys,json; print(json.load(sys.stdin)['username'])" 2>/dev/null)
-user_token=$(echo "$provision_result" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null)
+if [ "$RESP_STATUS" != "200" ]; then
+    prov_error=$(extract_error "$RESP_BODY")
+    if [ -n "$prov_error" ]; then
+        fail "$prov_error"
+        exit 1
+    fi
+    fail_diag "POST /provision"
+fi
 
-if [ -z "$user_token" ]; then
-    fail "Account setup failed. Contact a hackathon organizer."
-    exit 1
+username=$(extract_field "$RESP_BODY" "username")
+user_token=$(extract_field "$RESP_BODY" "token")
+
+if [ -z "$user_token" ] || [ -z "$username" ]; then
+    fail_diag "POST /provision"
 fi
 
 info "Account ready: $username"
