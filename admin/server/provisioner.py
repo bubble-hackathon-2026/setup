@@ -27,7 +27,19 @@ TEMPLATE = os.environ.get("TEMPLATE_REPO", "_template")
 DOMAIN = os.environ.get("ALLOWED_DOMAIN", "bubble.io")
 SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 
-# In-memory verification code store: email -> (code, expires_at)
+# Usernames that /provision must never create or password-reset, even if the
+# requested @bubble.io email maps here. Belt-and-suspenders alongside the
+# is_admin check on the existing Gitea user.
+RESERVED_USERNAMES = {
+    u.strip().lower()
+    for u in os.environ.get("RESERVED_USERNAMES", "hackathon-admin").split(",")
+    if u.strip()
+}
+
+MAX_TEAMS_PER_USER = int(os.environ.get("MAX_TEAMS_PER_USER", "2"))
+MAX_CODE_ATTEMPTS = int(os.environ.get("MAX_CODE_ATTEMPTS", "5"))
+
+# In-memory verification code store: email -> (code, expires_at, attempts)
 CODES = {}
 CODES_LOCK = threading.Lock()
 CODE_TTL = 600  # 10 minutes
@@ -36,7 +48,7 @@ CODE_TTL = 600  # 10 minutes
 def store_code(email: str, code: str) -> None:
     now = time.time()
     with CODES_LOCK:
-        CODES[email] = (code, now + CODE_TTL)
+        CODES[email] = (code, now + CODE_TTL, 0)
         # Opportunistic GC of expired codes
         for e in list(CODES.keys()):
             if CODES[e][1] < now:
@@ -44,17 +56,26 @@ def store_code(email: str, code: str) -> None:
 
 
 def verify_code(email: str, code: str) -> bool:
+    """Check a submitted code. Wrong attempts are counted; after
+    MAX_CODE_ATTEMPTS the entry is invalidated so the attacker has to start
+    a fresh /request-code (which sends another DM to the victim and is
+    visible in Slack)."""
     with CODES_LOCK:
         entry = CODES.get(email)
         if not entry:
             return False
-        stored, expires = entry
+        stored, expires, attempts = entry
         if time.time() > expires:
             del CODES[email]
             return False
         if stored != code:
+            attempts += 1
+            if attempts >= MAX_CODE_ATTEMPTS:
+                del CODES[email]
+            else:
+                CODES[email] = (stored, expires, attempts)
             return False
-        # Single-use
+        # Single-use on success
         del CODES[email]
         return True
 
@@ -142,6 +163,44 @@ def user_api(method, path, username, password, data=None):
         return {}
 
 
+def gitea_user_for_token(token: str):
+    """Resolve a Gitea PAT to its owning user. Returns None on any failure."""
+    if not token:
+        return None
+    url = f"{GITEA}/api/v1/user"
+    req = Request(url, headers={"Authorization": f"token {token}"})
+    try:
+        with urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+
+def find_team_membership(username: str, target_team_name: str):
+    """Walk the org's team-* teams once. Returns
+    (target_team_id_or_None, already_in_target_bool, total_team_memberships)."""
+    teams = api("GET", f"/orgs/{ORG}/teams?limit=100")
+    if not isinstance(teams, list):
+        return (None, False, 0)
+    target_tid = None
+    already_in_target = False
+    total = 0
+    target_full = f"team-{target_team_name}" if target_team_name else None
+    for t in teams:
+        name = t.get("name", "")
+        tid = t.get("id")
+        if not name.startswith("team-") or tid is None:
+            continue
+        member = api("GET", f"/teams/{tid}/members/{username}")
+        is_member = isinstance(member, dict) and "login" in member
+        if is_member:
+            total += 1
+        if target_full and name == target_full:
+            target_tid = tid
+            already_in_target = is_member
+    return (target_tid, already_in_target, total)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -194,7 +253,7 @@ class Handler(BaseHTTPRequestHandler):
     # --- Handlers ---
 
     def request_code(self):
-        """Send a 6-digit verification code via Slack DM."""
+        """Send an 8-digit verification code via Slack DM."""
         d = self.body()
         email = d.get("email", "").strip().lower()
 
@@ -206,7 +265,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(500, {"error": "Slack verification not configured on this server"})
             return
 
-        code = f"{secrets.randbelow(900000) + 100000}"  # 6-digit, 100000-999999
+        # 8-digit code (10000000-99999999, ~90M keyspace). Combined with the
+        # MAX_CODE_ATTEMPTS cap and 10-min TTL this makes brute force
+        # structurally impossible — best-case ~5e-8 per code window.
+        code = f"{secrets.randbelow(90000000) + 10000000}"
 
         ok, err = send_verification_dm(email, code)
         if not ok:
@@ -238,9 +300,23 @@ class Handler(BaseHTTPRequestHandler):
         username = email.split("@")[0].replace(".", "-").replace("+", "-").lower()
         password = secrets.token_hex(16)
 
+        # Reserved-username guard: never password-reset the Gitea admin (or
+        # any name in RESERVED_USERNAMES). The username transform above means
+        # an attacker who controls hackathon-admin@bubble.io (or any local
+        # part that collapses to the same login) would otherwise take over
+        # the site admin via the existing-user branch below.
+        if username in RESERVED_USERNAMES:
+            self.send_json(403, {"error": "This account is reserved."})
+            return
+
         # Create or update user
         existing = api("GET", f"/users/{username}")
         if "login" in existing:
+            # Belt-and-suspenders: if Gitea reports this account as a site
+            # admin, refuse regardless of the static reserved list.
+            if existing.get("is_admin") is True:
+                self.send_json(403, {"error": "This account is reserved."})
+                return
             # User exists — reset password so we can mint a new token.
             # Gitea's PATCH requires source_id and login_name.
             patch_result = api("PATCH", f"/admin/users/{username}", {
@@ -287,13 +363,30 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def create_team(self):
-        """Create a repo from template + a Gitea team for access control."""
+        """Create a repo from template + a Gitea team for access control.
+        Caller must present the Gitea PAT they got from /provision; we use
+        it to confirm they actually own `username`."""
         d = self.body()
         team_name = d.get("team", "").strip()
         username = d.get("username", "").strip()
+        token = d.get("token", "").strip()
 
-        if not team_name or not username:
-            self.send_json(400, {"error": "team and username required"})
+        if not team_name or not username or not token:
+            self.send_json(400, {"error": "team, username, and token required"})
+            return
+
+        token_user = gitea_user_for_token(token)
+        if not token_user or token_user.get("login", "").lower() != username.lower():
+            self.send_json(403, {"error": "Invalid token for this user"})
+            return
+
+        # Cap teams *before* creating the repo so we don't leave orphan repos.
+        _, _, current_team_count = find_team_membership(username, None)
+        if current_team_count >= MAX_TEAMS_PER_USER:
+            self.send_json(403, {
+                "error": f"You're already in {MAX_TEAMS_PER_USER} teams (max). "
+                         f"Leave one before creating another."
+            })
             return
 
         # Check if exists
@@ -331,26 +424,41 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {"team": team_name})
 
     def join_team(self):
-        """Add a user to an existing team's access group."""
+        """Add a user to an existing team's access group.
+        Caller must present the Gitea PAT they got from /provision; we use
+        it to confirm they actually own `username`. Re-joining a team you're
+        already in is a no-op (idempotent for re-runs of setup.sh)."""
         d = self.body()
         team_name = d.get("team", "").strip()
         username = d.get("username", "").strip()
+        token = d.get("token", "").strip()
 
-        if not team_name or not username:
-            self.send_json(400, {"error": "team and username required"})
+        if not team_name or not username or not token:
+            self.send_json(400, {"error": "team, username, and token required"})
             return
 
-        # Find the Gitea team
-        teams = api("GET", f"/orgs/{ORG}/teams")
-        tid = None
-        if isinstance(teams, list):
-            for t in teams:
-                if t.get("name") == f"team-{team_name}":
-                    tid = t["id"]
-                    break
-        if tid:
-            api("PUT", f"/teams/{tid}/members/{username}")
+        token_user = gitea_user_for_token(token)
+        if not token_user or token_user.get("login", "").lower() != username.lower():
+            self.send_json(403, {"error": "Invalid token for this user"})
+            return
 
+        target_tid, already_in_target, current_team_count = \
+            find_team_membership(username, team_name)
+
+        if target_tid is None:
+            self.send_json(404, {"error": "team not found"})
+            return
+
+        # Allow re-join (no-op). Only block when joining would push past the
+        # cap, which by definition means a NEW team membership.
+        if not already_in_target and current_team_count >= MAX_TEAMS_PER_USER:
+            self.send_json(403, {
+                "error": f"You're already in {MAX_TEAMS_PER_USER} teams (max). "
+                         f"Leave one before joining another."
+            })
+            return
+
+        api("PUT", f"/teams/{target_tid}/members/{username}")
         self.send_json(200, {"team": team_name, "username": username})
 
     def get_teams(self):

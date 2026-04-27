@@ -150,7 +150,7 @@ try {
     exit 1
 }
 
-Write-InfoMsg "Check Slack — we just sent you a DM with a 6-digit code"
+Write-InfoMsg "Check Slack — we just sent you a DM with an 8-digit code"
 Write-Host ""
 $verifyCode = Read-Host "  Enter the code"
 
@@ -284,7 +284,7 @@ if ($choice -eq '1') {
         try {
             $null = Invoke-RestMethod -Method Post -Uri "$Provisioner/create-team" `
                 -ContentType 'application/json' `
-                -Body (@{ team = $teamSlug; username = $username } | ConvertTo-Json -Compress) `
+                -Body (@{ team = $teamSlug; username = $username; token = $userToken } | ConvertTo-Json -Compress) `
                 -ErrorAction Stop
         } catch {
             $createErr = Extract-ApiError $_
@@ -361,9 +361,12 @@ if ($choice -eq '2') {
     try {
         $null = Invoke-RestMethod -Method Post -Uri "$Provisioner/join-team" `
             -ContentType 'application/json' `
-            -Body (@{ team = $teamSlug; username = $username } | ConvertTo-Json -Compress) `
+            -Body (@{ team = $teamSlug; username = $username; token = $userToken } | ConvertTo-Json -Compress) `
             -ErrorAction Stop
-    } catch {}
+    } catch {
+        Write-FailMsg (Extract-ApiError $_)
+        exit 1
+    }
 
     Write-InfoMsg "Added to team"
 

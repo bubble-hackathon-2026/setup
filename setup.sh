@@ -230,7 +230,7 @@ if [ "$RESP_STATUS" != "200" ]; then
     fail_diag "POST /request-code"
 fi
 
-info "Check Slack — we just sent you a DM with a 6-digit code"
+info "Check Slack — we just sent you a DM with an 8-digit code"
 echo ""
 read -r -p "  Enter the code: " verify_code
 
@@ -346,7 +346,7 @@ if [ "$choice" = "1" ]; then
 
         result=$(curl -s -X POST "$PROVISIONER/create-team" \
             -H "Content-Type: application/json" \
-            -d "{\"team\": \"$team_slug\", \"username\": \"$username\"}" 2>/dev/null || echo '{}')
+            -d "{\"team\": \"$team_slug\", \"username\": \"$username\", \"token\": \"$user_token\"}" 2>/dev/null || echo '{}')
 
         err=$(extract_error "$result")
         if [ "$err" = "team already exists" ]; then
@@ -411,9 +411,14 @@ if [ "$choice" = "2" ]; then
 
     step "Joining team '$team_slug'..."
 
-    curl -s -X POST "$PROVISIONER/join-team" \
+    join_resp=$(curl -s -X POST "$PROVISIONER/join-team" \
         -H "Content-Type: application/json" \
-        -d "{\"team\": \"$team_slug\", \"username\": \"$username\"}" >/dev/null 2>&1
+        -d "{\"team\": \"$team_slug\", \"username\": \"$username\", \"token\": \"$user_token\"}" 2>/dev/null || echo '{}')
+    join_err=$(extract_error "$join_resp")
+    if [ -n "$join_err" ]; then
+        fail "$join_err"
+        exit 1
+    fi
 
     info "Added to team"
 
