@@ -107,11 +107,45 @@ if ! rssh -o ConnectTimeout=10 "echo ok" &>/dev/null; then
 fi
 info "SSH connected (multiplexed)"
 
-# --- Disable UFW SSH rate-limiting (prevents connection refused during bootstrap) ---
+# --- Harden host (UFW + fail2ban) ---
+#
+# - SSH stays rate-limited via UFW. Earlier versions of this script ran plain
+#   `ufw allow ssh` to avoid lockout during bootstrap, but bootstrap now uses
+#   SSH connection multiplexing (see SSH_OPTS above) so all rssh/rscp calls
+#   share one TCP connection and don't trip the rate-limiter.
+# - The DigitalOcean Docker marketplace image opens 2375/2376 (Docker daemon
+#   TCP ports) by default. Those aren't used here (Docker uses the unix
+#   socket) and would be a critical RCE if anything ever bound them — close
+#   them at bootstrap time.
+# - fail2ban gives defense in depth on SSH key brute (computationally
+#   infeasible already, but cheap insurance).
 
-step "Configuring server firewall..."
-rssh "command -v ufw >/dev/null && { ufw delete limit ssh 2>/dev/null; ufw allow ssh 2>/dev/null; } || true" &>/dev/null
-info "Firewall configured"
+step "Hardening server (firewall + fail2ban)..."
+rssh "set -e
+    if command -v ufw >/dev/null; then
+        ufw delete allow 2375/tcp 2>/dev/null || true
+        ufw delete allow 2376/tcp 2>/dev/null || true
+        ufw delete allow ssh 2>/dev/null || true
+        ufw delete allow 22/tcp 2>/dev/null || true
+        ufw limit 22/tcp 2>/dev/null || true
+    fi
+    if ! systemctl is-active --quiet fail2ban 2>/dev/null; then
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fail2ban >/dev/null 2>&1 || true
+        cat >/etc/fail2ban/jail.local <<'JAILEOF'
+[DEFAULT]
+backend = systemd
+
+[sshd]
+enabled = true
+maxretry = 5
+findtime = 10m
+bantime = 1h
+JAILEOF
+        systemctl enable --now fail2ban >/dev/null 2>&1 || true
+    fi
+" &>/dev/null
+info "Firewall + fail2ban configured"
 
 # --- Upload server files ---
 
@@ -263,12 +297,10 @@ cat > .env.example << 'ENVEOF'
 # NEXT_PUBLIC_MAP_KEY=pk-...
 ENVEOF
 
-node -e "
-const pkg = require('./package.json');
-pkg.scripts = pkg.scripts || {};
-pkg.scripts.prepare = 'git config core.hooksPath .githooks 2>/dev/null || true';
-require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-"
+# Note: we used to set a `prepare` npm script here that wired core.hooksPath
+# at install time. setup.sh now does that directly post-clone, and we run
+# `npm install --ignore-scripts` to defend against malicious lifecycle
+# scripts in teammate commits — so a `prepare` script wouldn't run anyway.
 
 # Create repo on Gitea
 curl -sf -X POST "$GITEA_URL/api/v1/orgs/$GITEA_ORG/repos" \

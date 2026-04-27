@@ -377,9 +377,15 @@ if [ "$choice" = "1" ]; then
         fi
 
         cd "$HACKATHON_DIR/$team_slug"
+        # Wire pre-commit hook directly (we no longer rely on npm's `prepare`
+        # lifecycle script for this — see --ignore-scripts below).
+        git config core.hooksPath .githooks 2>/dev/null || true
         write_claude_settings "$HACKATHON_DIR/$team_slug"
         echo "  Installing dependencies (takes a moment)..."
-        npm install --silent 2>/dev/null || warn "npm install had warnings (usually fine)"
+        # --ignore-scripts: refuse to run any package's lifecycle scripts
+        # (preinstall/install/postinstall/prepare). A malicious commit by an
+        # attacker who has joined the team can otherwise inject RCE here.
+        npm install --silent --ignore-scripts 2>/dev/null || warn "npm install had warnings (usually fine)"
         info "Ready"
     fi
 fi
@@ -389,7 +395,7 @@ fi
 if [ "$choice" = "2" ]; then
     if [ -z "$team_slug" ]; then
         echo ""
-        teams_json=$(curl -sf "$PROVISIONER/teams" 2>/dev/null || echo '{"teams":[]}')
+        teams_json=$(curl -sf -H "Authorization: token $user_token" "$PROVISIONER/teams" 2>/dev/null || echo '{"teams":[]}')
         teams=$(node -e 'try{const o=JSON.parse(process.argv[1]);(o.teams||[]).forEach(t=>console.log(t))}catch{}' -- "$teams_json" 2>/dev/null || echo "")
 
         if [ -z "$teams" ]; then
@@ -429,6 +435,9 @@ if [ "$choice" = "2" ]; then
         # Update remote URL with fresh creds before pulling
         git remote set-url origin "$repo_url_base/$team_slug.git" 2>/dev/null || true
         git pull --rebase origin main 2>/dev/null || true
+        # Idempotent: ensure pre-commit hook is wired even on re-runs of
+        # setup.sh against a directory that pre-dates this fix.
+        git config core.hooksPath .githooks 2>/dev/null || true
         write_claude_settings "$HACKATHON_DIR/$team_slug"
     else
         if ! git clone "$repo_url_base/$team_slug.git" "$HACKATHON_DIR/$team_slug" 2>&1; then
@@ -436,9 +445,13 @@ if [ "$choice" = "2" ]; then
             exit 1
         fi
         cd "$HACKATHON_DIR/$team_slug"
+        git config core.hooksPath .githooks 2>/dev/null || true
         write_claude_settings "$HACKATHON_DIR/$team_slug"
         echo "  Installing dependencies (takes a moment)..."
-        npm install --silent 2>/dev/null || warn "npm install had warnings (usually fine)"
+        # --ignore-scripts blocks every package's lifecycle scripts. A
+        # teammate's malicious commit can otherwise inject RCE on first
+        # install.
+        npm install --silent --ignore-scripts 2>/dev/null || warn "npm install had warnings (usually fine)"
     fi
 
     info "Ready"

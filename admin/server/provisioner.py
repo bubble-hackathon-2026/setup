@@ -230,6 +230,17 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def authed_user(self):
+        """Resolve a request's Authorization: token <pat> header to a Gitea
+        login. Returns the username (str) or None. Used to gate endpoints
+        that should not be reachable to unauthenticated outsiders."""
+        h = self.headers.get("Authorization", "")
+        if not h.lower().startswith("token "):
+            return None
+        token = h.split(None, 1)[1].strip()
+        u = gitea_user_for_token(token)
+        return u.get("login") if isinstance(u, dict) else None
+
     def do_GET(self):
         if self.path == "/health":
             self._safe(lambda: self.send_json(200, {"ok": True}))
@@ -462,7 +473,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {"team": team_name, "username": username})
 
     def get_teams(self):
-        """List hackathon teams (excludes internal repos)."""
+        """List hackathon teams (excludes internal repos).
+
+        Authenticated: callers must present a Gitea PAT they got from
+        /provision. setup.sh has a token by the time it reaches the
+        join-team flow that consumes this list, so requiring auth here
+        costs nothing UX-wise and removes the only unauthenticated
+        recon endpoint."""
+        if not self.authed_user():
+            self.send_json(401, {"error": "auth required"})
+            return
         repos = api("GET", f"/orgs/{ORG}/repos?limit=100")
         names = sorted(r["name"] for r in repos if not r["name"].startswith("_")) \
             if isinstance(repos, list) else []

@@ -319,9 +319,16 @@ if ($choice -eq '1') {
         }
 
         Set-Location $targetPath
+        # Wire pre-commit hook directly. We no longer rely on npm's `prepare`
+        # lifecycle script for this, since --ignore-scripts below blocks all
+        # script execution as a defense against malicious commits.
+        git config core.hooksPath .githooks 2>$null
         Write-ClaudeSettings $targetPath
         Write-Host "  Installing dependencies (takes a moment)..."
-        npm install --silent 2>$null
+        # --ignore-scripts: refuse to run any package's lifecycle scripts
+        # (preinstall/install/postinstall/prepare). Defends against a
+        # teammate's malicious commit injecting RCE on first install.
+        npm install --silent --ignore-scripts 2>$null
         if ($LASTEXITCODE -ne 0) { Write-WarnMsg "npm install had warnings (usually fine)" }
         Write-InfoMsg "Ready"
     }
@@ -333,7 +340,8 @@ if ($choice -eq '2') {
     if (-not $teamSlug) {
         Write-Host ""
         try {
-            $teamsJson = Invoke-RestMethod -Method Get -Uri "$Provisioner/teams" -ErrorAction Stop
+            $teamsJson = Invoke-RestMethod -Method Get -Uri "$Provisioner/teams" `
+                -Headers @{ Authorization = "token $userToken" } -ErrorAction Stop
             $teams = @($teamsJson.teams)
         } catch {
             $teams = @()
@@ -378,6 +386,9 @@ if ($choice -eq '2') {
         Set-Location $targetPath
         git remote set-url origin "$repoUrlBase/$teamSlug.git" 2>$null
         git pull --rebase origin main 2>$null
+        # Idempotent: ensure the pre-commit hook is wired even on re-runs
+        # against a directory that pre-dates this fix.
+        git config core.hooksPath .githooks 2>$null
         Write-ClaudeSettings $targetPath
     } else {
         git clone "$repoUrlBase/$teamSlug.git" $targetPath
@@ -386,9 +397,12 @@ if ($choice -eq '2') {
             exit 1
         }
         Set-Location $targetPath
+        git config core.hooksPath .githooks 2>$null
         Write-ClaudeSettings $targetPath
         Write-Host "  Installing dependencies (takes a moment)..."
-        npm install --silent 2>$null
+        # --ignore-scripts blocks every package's lifecycle scripts. Defends
+        # against a teammate's malicious commit injecting RCE on first install.
+        npm install --silent --ignore-scripts 2>$null
         if ($LASTEXITCODE -ne 0) { Write-WarnMsg "npm install had warnings (usually fine)" }
     }
 
